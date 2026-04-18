@@ -22,19 +22,42 @@ const BASE_RECONNECT_DELAY_MS = Number(process.env.WA_RECONNECT_BASE_DELAY_MS ||
 const MAX_RECONNECT_DELAY_MS = Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 120000);
 
 const CHROME_PATHS = {
-  win32: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  linux: '/usr/bin/google-chrome-stable',
+  win32: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'],
+  darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+  linux: [
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/snap/bin/chromium',
+  ],
 };
 
 function getChromePath() {
   const envPath = process.env.CHROME_PATH;
   if (envPath && fs.existsSync(envPath)) return envPath;
 
-  const defaultPath = CHROME_PATHS[process.platform];
-  if (defaultPath && fs.existsSync(defaultPath)) return defaultPath;
+  const defaultPaths = CHROME_PATHS[process.platform] || [];
+  for (const p of defaultPaths) {
+    if (fs.existsSync(p)) return p;
+  }
 
   return undefined; // let puppeteer use bundled chromium
+}
+
+function formatPuppeteerLaunchError(error) {
+  const message = String(error?.message || error || 'Unknown browser launch error');
+
+  if (message.includes('error while loading shared libraries')) {
+    return [
+      'Chrome/Puppeteer gagal dijalankan karena dependency OS belum lengkap.',
+      'Install paket Linux untuk headless Chrome (contoh: libatk-bridge2.0-0, libnss3, libgbm1, libasound2, libxshmfence1, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libgtk-3-0, libcups2, libx11-xcb1, libdrm2, libpango-1.0-0, libpangocairo-1.0-0, libatspi2.0-0).',
+      'Opsional: install Google Chrome sistem dan set CHROME_PATH=/usr/bin/google-chrome-stable di .env.',
+      `Detail asli: ${message}`,
+    ].join(' ');
+  }
+
+  return message;
 }
 
 function setIO(io) {
@@ -251,9 +274,10 @@ async function initClient(deviceId, deviceRecord) {
   try {
     await client.initialize();
   } catch (err) {
-    updateStatus('error', { error: err.message });
+    const formattedError = formatPuppeteerLaunchError(err);
+    updateStatus('error', { error: formattedError });
     clients.delete(deviceId);
-    throw err;
+    throw new Error(formattedError);
   }
 
   return getStatus(deviceId);
