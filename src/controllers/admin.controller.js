@@ -14,6 +14,14 @@ function getOrderPlanFromLogs(logs = []) {
   };
 }
 
+function getResolvedPlanId(payment, reqBody = {}) {
+  const fromLogs = getOrderPlanFromLogs(payment.logs || []).plan_id;
+  const fromBody = reqBody?.plan_id || null;
+  const fromSubscription = payment.subscription?.plan_id || null;
+
+  return Number(fromLogs || fromBody || fromSubscription || 0) || null;
+}
+
 function serializeOrder(payment) {
   const plan = getOrderPlanFromLogs(payment.logs || []);
   return {
@@ -69,12 +77,14 @@ exports.approveOrder = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Only pending order can be approved' });
   }
 
-  const planFromOrder = getOrderPlanFromLogs(payment.logs || []);
-  if (!planFromOrder.plan_id) {
-    return res.status(400).json({ message: 'Order is missing plan information' });
+  const planId = getResolvedPlanId(payment, req.body || {});
+  if (!planId) {
+    return res.status(400).json({
+      message: 'Order is missing plan information. Please provide plan_id when approving this order.',
+    });
   }
 
-  const plan = await Plan.findByPk(planFromOrder.plan_id);
+  const plan = await Plan.findByPk(planId);
   if (!plan) return res.status(404).json({ message: 'Plan not found' });
 
   const now = new Date();
