@@ -3,6 +3,14 @@ const authMiddleware = require('../middlewares/authMiddleware');
 const emailVerifiedMiddleware = require('../middlewares/emailVerifiedMiddleware');
 const tenantMiddleware = require('../middlewares/tenantMiddleware');
 
+router.get('/', (_req, res) => {
+	return res.json({
+		status: 'ok',
+		service: 'wa-blast-backend',
+		message: 'API is running',
+	});
+});
+
 router.use('/auth', require('./auth.routes'));
 router.use('/webhooks', require('./webhooks.routes'));
 

@@ -22,42 +22,44 @@ const BASE_RECONNECT_DELAY_MS = Number(process.env.WA_RECONNECT_BASE_DELAY_MS ||
 const MAX_RECONNECT_DELAY_MS = Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 120000);
 
 const CHROME_PATHS = {
-  win32: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'],
-  darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
-  linux: [
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-    '/snap/bin/chromium',
-  ],
+  win32: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  linux: '/usr/bin/google-chrome-stable',
 };
 
-function getChromePath() {
-  const envPath = process.env.CHROME_PATH;
-  if (envPath && fs.existsSync(envPath)) return envPath;
+const DEFAULT_PUPPETEER_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-accelerated-2d-canvas',
+  '--no-first-run',
+  '--disable-gpu',
+];
 
-  const defaultPaths = CHROME_PATHS[process.platform] || [];
-  for (const p of defaultPaths) {
-    if (fs.existsSync(p)) return p;
-  }
-
-  return undefined; // let puppeteer use bundled chromium
+function getHeadlessSetting() {
+  const v = String(process.env.WA_HEADLESS || 'true').toLowerCase();
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  if (v === 'new') return 'new';
+  return true;
 }
 
-function formatPuppeteerLaunchError(error) {
-  const message = String(error?.message || error || 'Unknown browser launch error');
+function getPuppeteerArgs() {
+  const custom = String(process.env.WA_PUPPETEER_ARGS || '').trim();
+  if (!custom) return DEFAULT_PUPPETEER_ARGS;
+  return custom
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
 
-  if (message.includes('error while loading shared libraries')) {
-    return [
-      'Chrome/Puppeteer gagal dijalankan karena dependency OS belum lengkap.',
-      'Install paket Linux untuk headless Chrome (contoh: libatk-bridge2.0-0, libnss3, libgbm1, libasound2, libxshmfence1, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libgtk-3-0, libcups2, libx11-xcb1, libdrm2, libpango-1.0-0, libpangocairo-1.0-0, libatspi2.0-0).',
-      'Opsional: install Google Chrome sistem dan set CHROME_PATH=/usr/bin/google-chrome-stable di .env.',
-      `Detail asli: ${message}`,
-    ].join(' ');
-  }
+function getChromePath() {
+  const envPath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (envPath && fs.existsSync(envPath)) return envPath;
 
-  return message;
+  const defaultPath = CHROME_PATHS[process.platform];
+  if (defaultPath && fs.existsSync(defaultPath)) return defaultPath;
+
+  return undefined; // let puppeteer use bundled chromium
 }
 
 function setIO(io) {
@@ -154,14 +156,7 @@ async function initClient(deviceId, deviceRecord) {
 
   const authPath = path.join(process.cwd(), '.wwebjs_auth');
 
-  const puppeteerArgs = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--disable-gpu',
-  ];
+  const puppeteerArgs = getPuppeteerArgs();
 
   const chromePath = getChromePath();
 
@@ -171,7 +166,7 @@ async function initClient(deviceId, deviceRecord) {
       dataPath: authPath,
     }),
     puppeteer: {
-      headless: true,
+      headless: getHeadlessSetting(),
       args: puppeteerArgs,
       ...(chromePath ? { executablePath: chromePath } : {}),
     },
@@ -274,10 +269,9 @@ async function initClient(deviceId, deviceRecord) {
   try {
     await client.initialize();
   } catch (err) {
-    const formattedError = formatPuppeteerLaunchError(err);
-    updateStatus('error', { error: formattedError });
+    updateStatus('error', { error: err.message });
     clients.delete(deviceId);
-    throw new Error(formattedError);
+    throw err;
   }
 
   return getStatus(deviceId);
