@@ -4,6 +4,7 @@ module.exports = (sequelize, DataTypes) => {
   const Payment = sequelize.define('Payment', {
     id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
     organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    plan_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     subscription_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     amount: { type: DataTypes.DECIMAL(15, 2), allowNull: false },
     currency: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'IDR' },
@@ -27,6 +28,7 @@ module.exports = (sequelize, DataTypes) => {
 
   Payment.associate = models => {
     Payment.belongsTo(models.Organization, { foreignKey: 'organization_id', as: 'organization' });
+    Payment.belongsTo(models.Plan, { foreignKey: 'plan_id', as: 'plan' });
     Payment.belongsTo(models.Subscription, { foreignKey: 'subscription_id', as: 'subscription' });
     Payment.hasMany(models.PaymentLog, { foreignKey: 'payment_id', as: 'logs' });
   };

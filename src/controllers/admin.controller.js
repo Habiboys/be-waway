@@ -4,7 +4,8 @@ const { Payment, PaymentLog, Plan, Subscription, User, Organization, UsageLog } 
 
 function getOrderPlanFromLogs(logs = []) {
   const orderLog = logs.find((log) => log.event_type === 'order_created');
-  const payload = orderLog?.payload || {};
+  const anyPlanLog = logs.find((log) => log?.payload?.plan_id || log?.payload?.plan_name);
+  const payload = orderLog?.payload || anyPlanLog?.payload || {};
   return {
     plan_id: payload.plan_id || null,
     plan_name: payload.plan_name || null,
@@ -15,15 +16,65 @@ function getOrderPlanFromLogs(logs = []) {
 }
 
 function getResolvedPlanId(payment, reqBody = {}) {
+  const fromPayment = payment.plan_id || payment.plan?.id || null;
   const fromLogs = getOrderPlanFromLogs(payment.logs || []).plan_id;
   const fromBody = reqBody?.plan_id || null;
-  const fromSubscription = payment.subscription?.plan_id || null;
+  const fromSubscription = payment.subscription?.plan_id || payment.subscription?.plan?.id || null;
 
-  return Number(fromLogs || fromBody || fromSubscription || 0) || null;
+  return Number(fromPayment || fromLogs || fromBody || fromSubscription || 0) || null;
 }
 
-function serializeOrder(payment) {
-  const plan = getOrderPlanFromLogs(payment.logs || []);
+async function inferPlanIdFromPaymentAmount(payment) {
+  const amount = Number(payment?.amount || 0);
+  if (!amount) return null;
+
+  const plans = await Plan.findAll({
+    attributes: ['id', 'price'],
+  });
+
+  const matches = plans.filter((p) => Number(p.price) === amount);
+  if (matches.length === 1) {
+    return Number(matches[0].id);
+  }
+
+  return null;
+}
+
+function buildUniquePlanByPriceMap(plans = []) {
+  const grouped = new Map();
+  plans.forEach((plan) => {
+    const key = Number(plan.price || 0);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(plan);
+  });
+
+  const uniqueByPrice = new Map();
+  for (const [price, rows] of grouped.entries()) {
+    if (rows.length === 1) {
+      uniqueByPrice.set(price, rows[0]);
+    }
+  }
+
+  return uniqueByPrice;
+}
+
+function serializeOrder(payment, options = {}) {
+  const planFromLogs = getOrderPlanFromLogs(payment.logs || []);
+  const planFromPayment = payment.plan || null;
+  const planFromSub = payment.subscription?.plan || null;
+  const uniquePlanByPrice = options.uniquePlanByPrice || new Map();
+  const planByAmount = uniquePlanByPrice.get(Number(payment.amount || 0)) || null;
+
+  const plan = {
+    plan_id: planFromPayment?.id || planFromLogs.plan_id || planFromSub?.id || planByAmount?.id || null,
+    plan_name: planFromPayment?.name || planFromLogs.plan_name || planFromSub?.name || planByAmount?.name || null,
+    plan_price: planFromPayment?.price || planFromLogs.plan_price || planFromSub?.price || planByAmount?.price || null,
+    plan_message_limit:
+      planFromPayment?.message_limit || planFromLogs.plan_message_limit || planFromSub?.message_limit || planByAmount?.message_limit || null,
+    plan_duration_days:
+      planFromPayment?.duration_days || planFromLogs.plan_duration_days || planFromSub?.duration_days || planByAmount?.duration_days || null,
+  };
+
   return {
     id: payment.id,
     organization_id: payment.organization_id,
@@ -51,24 +102,31 @@ exports.listOrders = asyncHandler(async (req, res) => {
     where.status = req.query.status;
   }
 
+  const allPlans = await Plan.findAll({
+    attributes: ['id', 'name', 'price', 'message_limit', 'duration_days'],
+  });
+  const uniquePlanByPrice = buildUniquePlanByPriceMap(allPlans);
+
   const rows = await Payment.findAll({
     where,
     include: [
       { model: PaymentLog, as: 'logs' },
+      { model: Plan, as: 'plan', attributes: ['id', 'name', 'price', 'message_limit', 'duration_days'] },
       { model: Organization, as: 'organization', attributes: ['id', 'name'] },
-      { model: Subscription, as: 'subscription' },
+      { model: Subscription, as: 'subscription', include: [{ model: Plan, as: 'plan' }] },
     ],
     order: [['id', 'DESC']],
   });
 
-  res.json(rows.map(serializeOrder));
+  res.json(rows.map((row) => serializeOrder(row, { uniquePlanByPrice })));
 });
 
 exports.approveOrder = asyncHandler(async (req, res) => {
   const payment = await Payment.findByPk(req.params.id, {
     include: [
       { model: PaymentLog, as: 'logs' },
-      { model: Subscription, as: 'subscription' },
+      { model: Plan, as: 'plan', attributes: ['id', 'name', 'price', 'message_limit', 'duration_days'] },
+      { model: Subscription, as: 'subscription', include: [{ model: Plan, as: 'plan' }] },
     ],
   });
 
@@ -77,7 +135,10 @@ exports.approveOrder = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Only pending order can be approved' });
   }
 
-  const planId = getResolvedPlanId(payment, req.body || {});
+  const planId =
+    getResolvedPlanId(payment, req.body || {}) ||
+    await inferPlanIdFromPaymentAmount(payment);
+
   if (!planId) {
     return res.status(400).json({
       message: 'Order is missing plan information. Please provide plan_id when approving this order.',
@@ -114,6 +175,7 @@ exports.approveOrder = asyncHandler(async (req, res) => {
   }
 
   await payment.update({
+    plan_id: plan.id,
     status: 'paid',
     subscription_id: subscription.id,
     paid_at: now,
@@ -136,7 +198,8 @@ exports.approveOrder = asyncHandler(async (req, res) => {
   const refreshed = await Payment.findByPk(payment.id, {
     include: [
       { model: PaymentLog, as: 'logs' },
-      { model: Subscription, as: 'subscription' },
+      { model: Plan, as: 'plan', attributes: ['id', 'name', 'price', 'message_limit', 'duration_days'] },
+      { model: Subscription, as: 'subscription', include: [{ model: Plan, as: 'plan' }] },
       { model: Organization, as: 'organization', attributes: ['id', 'name'] },
     ],
   });
@@ -171,6 +234,7 @@ exports.rejectOrder = asyncHandler(async (req, res) => {
   const refreshed = await Payment.findByPk(payment.id, {
     include: [
       { model: PaymentLog, as: 'logs' },
+      { model: Plan, as: 'plan', attributes: ['id', 'name', 'price', 'message_limit', 'duration_days'] },
       { model: Organization, as: 'organization', attributes: ['id', 'name'] },
       { model: Subscription, as: 'subscription' },
     ],

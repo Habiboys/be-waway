@@ -17,6 +17,7 @@ module.exports = (sequelize, DataTypes) => {
 
   Plan.associate = models => {
     Plan.hasMany(models.Subscription, { foreignKey: 'plan_id', as: 'subscriptions' });
+    Plan.hasMany(models.Payment, { foreignKey: 'plan_id', as: 'payments' });
   };
 
   return Plan;

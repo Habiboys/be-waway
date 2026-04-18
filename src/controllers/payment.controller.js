@@ -17,6 +17,19 @@ function pickPlanFromLogs(logs = []) {
 }
 
 function serializeOrder(payment) {
+  const relationPlan = payment.plan
+    ? {
+        id: payment.plan.id,
+        name: payment.plan.name,
+        price: Number(payment.plan.price || 0),
+        message_limit: payment.plan.message_limit,
+        device_limit: payment.plan.device_limit,
+        duration_days: payment.plan.duration_days,
+      }
+    : null;
+
+  const planFromLogs = pickPlanFromLogs(payment.logs || []);
+
   return {
     id: payment.id,
     organization_id: payment.organization_id,
@@ -29,7 +42,7 @@ function serializeOrder(payment) {
     paid_at: payment.paid_at,
     created_at: payment.created_at,
     updated_at: payment.updated_at,
-    plan: pickPlanFromLogs(payment.logs || []),
+    plan: relationPlan || planFromLogs,
     subscription: payment.subscription ? {
       id: payment.subscription.id,
       plan_id: payment.subscription.plan_id,
@@ -61,6 +74,7 @@ exports.createInvoice = asyncHandler(async (req, res) => {
   const externalId = `INV-${req.organizationId}-${Date.now()}`;
   const payment = await Payment.create({
     organization_id: req.organizationId,
+    plan_id: plan.id,
     subscription_id: activeSubscription?.id || null,
     amount: plan.price,
     status: 'pending',
@@ -90,6 +104,7 @@ exports.createInvoice = asyncHandler(async (req, res) => {
   const fullOrder = await Payment.findByPk(payment.id, {
     include: [
       { model: PaymentLog, as: 'logs' },
+      { model: Plan, as: 'plan' },
       {
         model: Subscription,
         as: 'subscription',
@@ -109,6 +124,7 @@ exports.myOrders = asyncHandler(async (req, res) => {
     where: { organization_id: req.organizationId },
     include: [
       { model: PaymentLog, as: 'logs' },
+      { model: Plan, as: 'plan' },
       {
         model: Subscription,
         as: 'subscription',
@@ -126,6 +142,7 @@ exports.orderDetail = asyncHandler(async (req, res) => {
     where: { id: req.params.id, organization_id: req.organizationId },
     include: [
       { model: PaymentLog, as: 'logs' },
+      { model: Plan, as: 'plan' },
       {
         model: Subscription,
         as: 'subscription',
