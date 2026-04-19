@@ -23,8 +23,8 @@ module.exports = async (req, res, next) => {
     return res.status(400).json({ message: 'Organization context is required (x-organization-id)' });
   }
 
-  req.organizationId = Number(orgId);
-  if (Number.isNaN(req.organizationId) || req.organizationId <= 0) {
+  req.organizationId = String(orgId).trim();
+  if (!req.organizationId) {
     return res.status(400).json({ message: 'Invalid organization id context' });
   }
 

@@ -2,8 +2,8 @@
 
 module.exports = (sequelize, DataTypes) => {
   const PaymentLog = sequelize.define('PaymentLog', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    payment_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    payment_id: { type: DataTypes.STRING(32), allowNull: false },
     event_type: { type: DataTypes.STRING(100), allowNull: true },
     event_id: { type: DataTypes.STRING(190), allowNull: true },
     payload: { type: DataTypes.JSON, allowNull: false },

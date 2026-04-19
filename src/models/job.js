@@ -2,7 +2,7 @@
 
 module.exports = (sequelize, DataTypes) => {
   const Job = sequelize.define('Job', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     type: { type: DataTypes.STRING(100), allowNull: false },
     payload: { type: DataTypes.JSON, allowNull: true },
     status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'pending' },

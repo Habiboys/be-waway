@@ -12,5 +12,7 @@ router.post('/resend-verification', authController.resendVerification);
 router.get('/plans', authController.publicPlans);
 router.get('/me', authMiddleware, emailVerifiedMiddleware, authController.me);
 router.post('/logout', authMiddleware, emailVerifiedMiddleware, authController.logout);
+router.put('/profile', authMiddleware, emailVerifiedMiddleware, authController.updateProfile);
+router.post('/change-password', authMiddleware, emailVerifiedMiddleware, authController.changePassword);
 
 module.exports = router;

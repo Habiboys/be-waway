@@ -2,9 +2,9 @@
 
 module.exports = (sequelize, DataTypes) => {
   const Subscription = sequelize.define('Subscription', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
-    plan_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
+    plan_id: { type: DataTypes.UUID, allowNull: false },
     start_date: { type: DataTypes.DATE, allowNull: false },
     end_date: { type: DataTypes.DATE, allowNull: false },
     status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'active' }

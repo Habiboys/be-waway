@@ -2,9 +2,9 @@
 
 module.exports = (sequelize, DataTypes) => {
   const ContactListItem = sequelize.define('ContactListItem', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    list_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
-    contact_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false }
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    list_id: { type: DataTypes.UUID, allowNull: false },
+    contact_id: { type: DataTypes.STRING(32), allowNull: false }
   }, {
     tableName: 'contact_list_items',
     timestamps: false

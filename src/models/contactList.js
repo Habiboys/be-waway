@@ -2,8 +2,8 @@
 
 module.exports = (sequelize, DataTypes) => {
   const ContactList = sequelize.define('ContactList', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
     name: { type: DataTypes.STRING(190), allowNull: false },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }
   }, {

@@ -6,9 +6,11 @@ const bcrypt = require('bcryptjs');
 module.exports = {
   async up(queryInterface) {
     const passwordHash = await bcrypt.hash('admin123', 10);
+    const defaultAdminId = '00000000-0000-4000-8000-000000000001';
 
     await queryInterface.bulkInsert('users', [
       {
+        id: defaultAdminId,
         name: 'Super Admin',
         email: 'admin@waway.com',
         password: passwordHash,
@@ -21,6 +23,7 @@ module.exports = {
 
     await queryInterface.bulkUpdate('users',
       {
+        id: defaultAdminId,
         name: 'Super Admin',
         password: passwordHash,
         role: 'admin',

@@ -2,8 +2,8 @@
 
 module.exports = (sequelize, DataTypes) => {
   const ApiKey = sequelize.define('ApiKey', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
     api_key: { type: DataTypes.STRING(255), allowNull: false },
     is_active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     created_at: { type: DataTypes.DATE, allowNull: false }

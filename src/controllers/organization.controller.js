@@ -4,8 +4,8 @@ const { Organization, OrganizationUser, User } = require('../models');
 const isAdmin = (req) => req.user?.role === 'admin';
 
 const getOrganizationForUser = async (req, organizationId, { requireOwner = false } = {}) => {
-  const orgId = Number(organizationId);
-  if (Number.isNaN(orgId) || orgId <= 0) return null;
+  const orgId = String(organizationId || '').trim();
+  if (!orgId) return null;
 
   if (isAdmin(req)) {
     return Organization.findByPk(orgId);
@@ -82,7 +82,9 @@ exports.create = asyncHandler(async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) return res.status(400).json({ message: 'name is required' });
 
-  const ownerId = isAdmin(req) && req.body?.owner_id ? Number(req.body.owner_id) : Number(req.user.id);
+  const ownerId = isAdmin(req) && req.body?.owner_id
+    ? String(req.body.owner_id).trim()
+    : String(req.user.id);
 
   const org = await Organization.create({
     name,
@@ -140,10 +142,10 @@ exports.invite = asyncHandler(async (req, res) => {
   const role = req.body?.role === 'owner' ? 'owner' : 'member';
 
   let targetUser = null;
-  const userId = Number(req.body?.user_id);
+  const userId = req.body?.user_id ? String(req.body.user_id).trim() : '';
   const email = String(req.body?.email || '').trim().toLowerCase();
 
-  if (!Number.isNaN(userId) && userId > 0) {
+  if (userId) {
     targetUser = await User.findByPk(userId, { attributes: ['id', 'name', 'email', 'role'] });
   } else if (email) {
     targetUser = await User.findOne({
@@ -160,11 +162,11 @@ exports.invite = asyncHandler(async (req, res) => {
 
   const [row] = await OrganizationUser.findOrCreate({
     where: {
-      organization_id: Number(req.params.id),
+      organization_id: String(req.params.id),
       user_id: targetUser.id,
     },
     defaults: {
-      organization_id: Number(req.params.id),
+      organization_id: String(req.params.id),
       user_id: targetUser.id,
       role,
       invitation_status: 'pending',

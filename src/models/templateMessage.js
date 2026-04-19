@@ -1,14 +1,18 @@
+const crypto = require('crypto');
+
+const createTemplateId = () => `tpl_${crypto.randomBytes(6).toString('hex')}`;
+
 module.exports = (sequelize, DataTypes) => {
   const TemplateMessage = sequelize.define(
     'TemplateMessage',
     {
       id: {
-        type: DataTypes.INTEGER,
-        autoIncrement: true,
+        type: DataTypes.STRING(32),
+        defaultValue: createTemplateId,
         primaryKey: true,
       },
       organization_id: {
-        type: DataTypes.INTEGER,
+        type: DataTypes.UUID,
         allowNull: false,
       },
       name: {

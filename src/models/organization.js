@@ -2,9 +2,9 @@
 
 module.exports = (sequelize, DataTypes) => {
   const Organization = sequelize.define('Organization', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     name: { type: DataTypes.STRING(190), allowNull: false },
-    owner_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+    owner_id: { type: DataTypes.UUID, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }
   }, {
     tableName: 'organizations',

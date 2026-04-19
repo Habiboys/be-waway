@@ -2,8 +2,8 @@
 
 module.exports = (sequelize, DataTypes) => {
   const UsageLog = sequelize.define('UsageLog', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
     messages_sent: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     date: { type: DataTypes.DATEONLY, allowNull: false }
   }, {

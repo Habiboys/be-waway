@@ -25,8 +25,8 @@ function normalizeJobPayload(rawPayload) {
 
   return {
     ...payload,
-    organizationId: organizationId == null ? null : Number(organizationId),
-    deviceId: deviceId == null ? null : Number(deviceId),
+    organizationId: organizationId == null ? null : String(organizationId),
+    deviceId: deviceId == null ? null : String(deviceId),
   };
 }
 

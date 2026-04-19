@@ -21,7 +21,7 @@ module.exports = async (req, res, next) => {
       return res.status(401).json({ message: 'Invalid API key' });
     }
 
-    req.organizationId = Number(apiKey.organization_id);
+    req.organizationId = apiKey.organization_id == null ? null : String(apiKey.organization_id);
     req.user = {
       id: apiKey.organization?.owner?.id || 0,
       email: apiKey.organization?.owner?.email || null,
@@ -45,7 +45,7 @@ module.exports = async (req, res, next) => {
     const payload = jwt.verify(token, process.env.JWT_SECRET || 'change-me');
     req.user = payload;
     if (payload.organization_id && !req.organizationId) {
-      req.organizationId = Number(payload.organization_id);
+      req.organizationId = String(payload.organization_id);
     }
     return next();
   } catch (error) {

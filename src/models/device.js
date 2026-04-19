@@ -1,9 +1,13 @@
 'use strict';
 
+const crypto = require('crypto');
+
+const createDeviceId = () => crypto.randomBytes(6).toString('hex');
+
 module.exports = (sequelize, DataTypes) => {
   const Device = sequelize.define('Device', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    id: { type: DataTypes.STRING(16), allowNull: false, primaryKey: true, defaultValue: createDeviceId },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
     device_name: { type: DataTypes.STRING(150), allowNull: false },
     phone_number: { type: DataTypes.STRING(30), allowNull: true },
     status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'offline' },
@@ -12,7 +16,14 @@ module.exports = (sequelize, DataTypes) => {
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }
   }, {
     tableName: 'devices',
-    timestamps: false
+    timestamps: false,
+    hooks: {
+      beforeValidate: (device) => {
+        if (!device.id) {
+          device.id = createDeviceId();
+        }
+      },
+    },
   });
 
   Device.associate = models => {

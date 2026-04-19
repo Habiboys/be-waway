@@ -1,11 +1,15 @@
 'use strict';
 
+const crypto = require('crypto');
+
+const createOrderId = () => `ord_${crypto.randomBytes(6).toString('hex')}`;
+
 module.exports = (sequelize, DataTypes) => {
   const Payment = sequelize.define('Payment', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
-    plan_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
-    subscription_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+    id: { type: DataTypes.STRING(32), allowNull: false, primaryKey: true, defaultValue: createOrderId },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
+    plan_id: { type: DataTypes.UUID, allowNull: true },
+    subscription_id: { type: DataTypes.UUID, allowNull: true },
     amount: { type: DataTypes.DECIMAL(15, 2), allowNull: false },
     currency: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'IDR' },
     status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'pending' },

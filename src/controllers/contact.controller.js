@@ -39,8 +39,8 @@ controller.create = asyncHandler(async (req, res) => {
 
   const listIds = [...new Set(
     contact_list_ids
-      .map((id) => Number(id))
-      .filter((id) => Number.isInteger(id) && id > 0)
+      .map((id) => String(id || '').trim())
+      .filter(Boolean)
   )];
 
   if (listIds.length === 0) {
@@ -113,8 +113,8 @@ controller.update = asyncHandler(async (req, res) => {
 
     listIds = [...new Set(
       contact_list_ids
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0)
+        .map((id) => String(id || '').trim())
+        .filter(Boolean)
     )];
 
     if (listIds.length === 0) {

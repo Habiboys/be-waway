@@ -75,7 +75,7 @@ const getPrimaryOrganizationId = async (userId) => {
     order: [['id', 'ASC']],
   });
 
-  return membership ? Number(membership.organization_id) : null;
+  return membership ? membership.organization_id : null;
 };
 
 exports.register = asyncHandler(async (req, res) => {
@@ -140,7 +140,7 @@ exports.register = asyncHandler(async (req, res) => {
 
     return {
       user,
-      organizationId: Number(organization.id),
+      organizationId: organization.id,
       verificationToken: rawVerificationToken,
     };
   });
@@ -320,6 +320,118 @@ exports.resendVerification = asyncHandler(async (req, res) => {
   await sendVerificationEmail(user, rawToken);
 
   return res.json({ message: 'If account exists, verification email has been sent.' });
+});
+
+exports.updateProfile = asyncHandler(async (req, res) => {
+  const user = await User.findByPk(req.user.id);
+  if (!user || user.deleted_at) {
+    return res.status(404).json({ message: 'User not found' });
+  }
+
+  const name = req.body?.name !== undefined ? String(req.body.name).trim() : user.name;
+  const phoneNumber = req.body?.phone_number !== undefined
+    ? String(req.body.phone_number).trim()
+    : (user.phone_number || null);
+  const address = req.body?.address !== undefined ? String(req.body.address).trim() : (user.address || null);
+  const nextEmail = req.body?.email !== undefined
+    ? String(req.body.email).toLowerCase().trim()
+    : String(user.email).toLowerCase();
+
+  if (!name) {
+    return res.status(400).json({ message: 'name is required' });
+  }
+
+  if (!nextEmail) {
+    return res.status(400).json({ message: 'email is required' });
+  }
+
+  const currentEmail = String(user.email).toLowerCase();
+  const isEmailChanged = nextEmail !== currentEmail;
+
+  if (isEmailChanged) {
+    const exists = await User.findOne({
+      where: {
+        email: nextEmail,
+        id: { [Op.ne]: user.id },
+      },
+    });
+
+    if (exists) {
+      return res.status(409).json({ message: 'Email already registered' });
+    }
+  }
+
+  let verificationToken = null;
+  if (isEmailChanged) {
+    verificationToken = createRawToken();
+  }
+
+  await user.update({
+    name,
+    email: nextEmail,
+    phone_number: phoneNumber || null,
+    address: address || null,
+    ...(isEmailChanged
+      ? {
+          email_verified_at: null,
+          email_verification_token: hashToken(verificationToken),
+          email_verification_expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        }
+      : {}),
+  });
+
+  if (isEmailChanged) {
+    await sendVerificationEmail(user, verificationToken);
+  }
+
+  const organizationId = await getPrimaryOrganizationId(user.id);
+
+  return res.json({
+    user: sanitizeUser(user, { organization_id: organizationId }),
+    requires_reverification: isEmailChanged,
+    message: isEmailChanged
+      ? 'Profile updated. Please verify your new email address.'
+      : 'Profile updated successfully',
+  });
+});
+
+exports.changePassword = asyncHandler(async (req, res) => {
+  const {
+    current_password,
+    new_password,
+    confirm_password,
+  } = req.body || {};
+
+  if (!current_password || !new_password) {
+    return res.status(400).json({ message: 'current_password and new_password are required' });
+  }
+
+  if (String(new_password).length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters' });
+  }
+
+  if (confirm_password !== undefined && String(confirm_password) !== String(new_password)) {
+    return res.status(400).json({ message: 'Password confirmation does not match' });
+  }
+
+  const user = await User.findByPk(req.user.id);
+  if (!user || user.deleted_at) {
+    return res.status(404).json({ message: 'User not found' });
+  }
+
+  const isCurrentPasswordValid = await bcrypt.compare(String(current_password), user.password);
+  if (!isCurrentPasswordValid) {
+    return res.status(400).json({ message: 'Current password is incorrect' });
+  }
+
+  const nextHash = await bcrypt.hash(String(new_password), 10);
+  await user.update({
+    password: nextHash,
+    password_reset_token: null,
+    password_reset_expires_at: null,
+  });
+
+  return res.json({ message: 'Password updated successfully' });
 });
 
 exports.publicPlans = asyncHandler(async (_req, res) => {

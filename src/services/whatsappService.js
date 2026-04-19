@@ -106,7 +106,7 @@ function scheduleReconnect(deviceId, deviceRecord) {
     reconnectTimers.delete(key);
 
     try {
-      const latestDevice = deviceRecord || await db.Device.findByPk(Number(key));
+      const latestDevice = deviceRecord || await db.Device.findByPk(String(key));
       if (!latestDevice) {
         console.warn(`[WA:${key}] Device not found during reconnect`);
         return;

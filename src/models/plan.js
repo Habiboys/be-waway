@@ -2,7 +2,7 @@
 
 module.exports = (sequelize, DataTypes) => {
   const Plan = sequelize.define('Plan', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     name: { type: DataTypes.STRING(100), allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: true },
     price: { type: DataTypes.DECIMAL(15, 2), allowNull: false, defaultValue: 0 },

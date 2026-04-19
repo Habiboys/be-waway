@@ -10,9 +10,41 @@ const fs = require('fs');
 
 const controller = buildCrudController({ modelName: 'Device', label: 'Device' });
 
-const getOwnedDevice = async (id, organizationId) => {
-  return db.Device.findOne({ where: { id, organization_id: organizationId } });
+const getOwnedDevice = async (idOrPublicId, organizationId) => {
+  const raw = String(idOrPublicId || '').trim();
+  return db.Device.findOne({
+    where: {
+      organization_id: organizationId,
+      id: raw,
+    },
+  });
 };
+
+controller.detail = asyncHandler(async (req, res) => {
+  const row = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!row) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+  return res.json(row);
+});
+
+controller.update = asyncHandler(async (req, res) => {
+  const row = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!row) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+  await row.update(req.body);
+  return res.json(row);
+});
+
+controller.remove = asyncHandler(async (req, res) => {
+  const row = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!row) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+  await row.destroy();
+  return res.status(204).send();
+});
 
 const SCHEDULE_JOB_STATUSES = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
 
@@ -36,15 +68,15 @@ function normalizeJobPayload(rawPayload) {
 
   return {
     ...payload,
-    organizationId: organizationId == null ? null : Number(organizationId),
-    deviceId: deviceId == null ? null : Number(deviceId),
+    organizationId: organizationId == null ? null : String(organizationId),
+    deviceId: deviceId == null ? null : String(deviceId),
   };
 }
 
 function isScheduleOwnedByContext(job, organizationId, deviceId) {
   const payload = normalizeJobPayload(job?.payload);
-  return Number(payload.organizationId) === Number(organizationId)
-    && Number(payload.deviceId) === Number(deviceId);
+  return String(payload.organizationId) === String(organizationId)
+    && String(payload.deviceId) === String(deviceId);
 }
 
 function serializeScheduledJob(job) {
@@ -89,9 +121,7 @@ controller.uploadMiddleware = upload.single('file');
 
 // --- Connect device: start WA client ---
 controller.connect = asyncHandler(async (req, res) => {
-  const device = await db.Device.findOne({
-    where: { id: req.params.id, organization_id: req.organizationId },
-  });
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
   if (!device) {
     return res.status(404).json({ message: 'Device not found' });
   }
@@ -107,9 +137,7 @@ controller.connect = asyncHandler(async (req, res) => {
 
 // --- Disconnect device ---
 controller.disconnect = asyncHandler(async (req, res) => {
-  const device = await db.Device.findOne({
-    where: { id: req.params.id, organization_id: req.organizationId },
-  });
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
   if (!device) {
     return res.status(404).json({ message: 'Device not found' });
   }
@@ -122,9 +150,14 @@ controller.disconnect = asyncHandler(async (req, res) => {
 
 // --- Get QR code ---
 controller.qr = asyncHandler(async (req, res) => {
-  const status = waService.getStatus(req.params.id);
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const status = waService.getStatus(device.id);
   res.json({
-    device_id: req.params.id,
+    device_id: device.id,
     qr: status.qr || null,
     status: status.status,
   });
@@ -132,9 +165,14 @@ controller.qr = asyncHandler(async (req, res) => {
 
 // --- Get real-time status ---
 controller.status = asyncHandler(async (req, res) => {
-  const status = waService.getStatus(req.params.id);
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const status = waService.getStatus(device.id);
   res.json({
-    device_id: req.params.id,
+    device_id: device.id,
     ...status,
     // Remove raw QR from status response (use /qr endpoint)
     qrRaw: undefined,
@@ -174,7 +212,7 @@ controller.sendTest = asyncHandler(async (req, res) => {
   }
 
   try {
-    const result = await waService.sendMessage(req.params.id, phone, message, {
+    const result = await waService.sendMessage(device.id, phone, message, {
       organizationId: req.organizationId,
       bypassQuota: isAdmin,
     });
@@ -245,7 +283,7 @@ controller.scheduleSend = asyncHandler(async (req, res) => {
     type: 'single_send',
     payload: {
       organizationId: req.organizationId,
-      deviceId: Number(req.params.id),
+      deviceId: String(device.id),
       phone: String(phone).trim(),
       message: String(message),
       options: {
@@ -287,7 +325,7 @@ controller.listSchedules = asyncHandler(async (req, res) => {
   });
 
   const filtered = rows.filter((job) =>
-    isScheduleOwnedByContext(job, req.organizationId, req.params.id)
+    isScheduleOwnedByContext(job, req.organizationId, device.id)
   );
 
   return res.json(filtered.map(serializeScheduledJob));
@@ -305,7 +343,7 @@ controller.stopSchedule = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Scheduled message not found' });
   }
 
-  if (!isScheduleOwnedByContext(job, req.organizationId, req.params.id)) {
+  if (!isScheduleOwnedByContext(job, req.organizationId, device.id)) {
     return res.status(403).json({ message: 'You do not have access to this schedule' });
   }
 
@@ -339,7 +377,7 @@ controller.resumeSchedule = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Scheduled message not found' });
   }
 
-  if (!isScheduleOwnedByContext(job, req.organizationId, req.params.id)) {
+  if (!isScheduleOwnedByContext(job, req.organizationId, device.id)) {
     return res.status(403).json({ message: 'You do not have access to this schedule' });
   }
 
@@ -377,7 +415,7 @@ controller.deleteSchedule = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Scheduled message not found' });
   }
 
-  if (!isScheduleOwnedByContext(job, req.organizationId, req.params.id)) {
+  if (!isScheduleOwnedByContext(job, req.organizationId, device.id)) {
     return res.status(403).json({ message: 'You do not have access to this schedule' });
   }
 
@@ -423,7 +461,7 @@ controller.sendBulk = asyncHandler(async (req, res) => {
     type: 'bulk_send',
     payload: {
       organizationId: req.organizationId,
-      deviceId: Number(req.params.id),
+      deviceId: String(device.id),
       contacts,
       message,
       options: {
@@ -533,7 +571,7 @@ controller.sendBulkExcel = asyncHandler(async (req, res) => {
       type: 'bulk_send',
       payload: {
         organizationId: req.organizationId,
-        deviceId: Number(req.params.id),
+        deviceId: String(device.id),
         contacts,
         message,
         options: {

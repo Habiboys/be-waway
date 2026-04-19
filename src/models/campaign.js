@@ -2,9 +2,9 @@
 
 module.exports = (sequelize, DataTypes) => {
   const Campaign = sequelize.define('Campaign', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-    organization_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
-    device_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+    id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
+    device_id: { type: DataTypes.STRING(16), allowNull: true },
     name: { type: DataTypes.STRING(190), allowNull: false },
     message: { type: DataTypes.TEXT('long'), allowNull: true },
     media_url: { type: DataTypes.STRING(500), allowNull: true },

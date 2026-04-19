@@ -21,7 +21,7 @@ function getResolvedPlanId(payment, reqBody = {}) {
   const fromBody = reqBody?.plan_id || null;
   const fromSubscription = payment.subscription?.plan_id || payment.subscription?.plan?.id || null;
 
-  return Number(fromPayment || fromLogs || fromBody || fromSubscription || 0) || null;
+  return fromPayment || fromLogs || fromBody || fromSubscription || null;
 }
 
 async function inferPlanIdFromPaymentAmount(payment) {
@@ -34,7 +34,7 @@ async function inferPlanIdFromPaymentAmount(payment) {
 
   const matches = plans.filter((p) => Number(p.price) === amount);
   if (matches.length === 1) {
-    return Number(matches[0].id);
+    return matches[0].id;
   }
 
   return null;
@@ -279,7 +279,7 @@ exports.updateUser = asyncHandler(async (req, res) => {
     }
 
     const duplicate = await User.findOne({ where: { email: nextEmail } });
-    if (duplicate && Number(duplicate.id) !== Number(user.id)) {
+    if (duplicate && String(duplicate.id) !== String(user.id)) {
       return res.status(409).json({ message: 'Email already registered' });
     }
 
@@ -314,7 +314,7 @@ exports.softDeleteUser = asyncHandler(async (req, res) => {
   const user = await User.findByPk(req.params.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
 
-  if (Number(user.id) === Number(req.user.id)) {
+  if (String(user.id) === String(req.user.id)) {
     return res.status(400).json({ message: 'You cannot soft-delete your own account' });
   }
 
