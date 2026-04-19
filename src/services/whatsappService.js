@@ -385,6 +385,13 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
   const organizationId = options.organizationId || null;
   const bypassQuota = options.bypassQuota === true;
 
+  const applyTemplateVariables = (template = '', context = {}) => {
+    return String(template).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+      const value = context[key];
+      return value === undefined || value === null || value === '' ? match : String(value);
+    });
+  };
+
   if (!isReady(deviceId)) {
     throw new Error('Device is not connected / ready');
   }
@@ -407,14 +414,17 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
 
   for (let i = 0; i < contacts.length; i++) {
     const contact = contacts[i];
-    const phone = contact.phone || contact.phone_number || contact.nomor;
-    const name = contact.name || contact.nama || '';
+    const context = Object.fromEntries(
+      Object.entries(contact || {}).map(([key, value]) => [
+        key,
+        value === undefined || value === null ? '' : String(value),
+      ])
+    );
+    const phone = context.phone || '';
+    const name = context.name || '';
 
     // Replace template variables
-    let message = messageTemplate
-      .replace(/\{\{name\}\}/gi, name)
-      .replace(/\{\{nama\}\}/gi, name)
-      .replace(/\{\{phone\}\}/gi, phone);
+    const message = applyTemplateVariables(messageTemplate, context);
 
     let sent = false;
     let lastError = null;

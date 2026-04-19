@@ -16,14 +16,39 @@ const getOwnedDevice = async (id, organizationId) => {
 
 const SCHEDULE_JOB_STATUSES = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
 
+function normalizeJobPayload(rawPayload) {
+  let payload = rawPayload;
+
+  if (typeof payload === 'string') {
+    try {
+      payload = JSON.parse(payload);
+    } catch (_error) {
+      payload = {};
+    }
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    payload = {};
+  }
+
+  const organizationId = payload.organizationId ?? payload.organization_id ?? null;
+  const deviceId = payload.deviceId ?? payload.device_id ?? null;
+
+  return {
+    ...payload,
+    organizationId: organizationId == null ? null : Number(organizationId),
+    deviceId: deviceId == null ? null : Number(deviceId),
+  };
+}
+
 function isScheduleOwnedByContext(job, organizationId, deviceId) {
-  const payload = job?.payload || {};
+  const payload = normalizeJobPayload(job?.payload);
   return Number(payload.organizationId) === Number(organizationId)
     && Number(payload.deviceId) === Number(deviceId);
 }
 
 function serializeScheduledJob(job) {
-  const payload = job.payload || {};
+  const payload = normalizeJobPayload(job.payload);
   return {
     id: job.id,
     status: job.status,
@@ -459,12 +484,25 @@ controller.sendBulkExcel = asyncHandler(async (req, res) => {
       return res.status(400).json({ message: 'Excel file is empty' });
     }
 
-    // Normalize contacts — support various column names
-    const contacts = data.map(row => {
-      const phone = row.phone || row.phone_number || row.nomor || row.no_hp || row.hp ||
-                    row.Phone || row['Phone Number'] || row.Nomor || row['No HP'] || '';
-      const name = row.name || row.nama || row.Name || row.Nama || '';
-      return { phone: String(phone).trim(), name: String(name).trim() };
+    // Strict parsing: canonical columns are `phone` and optional `name`.
+    // Additional columns are kept as-is and matched exactly with template variables.
+    const contacts = data.map((row) => {
+      const phone = String(row?.phone || '').trim();
+      const name = String(row?.name || '').trim();
+
+      const extraVariables = {};
+      Object.entries(row || {}).forEach(([key, value]) => {
+        if (!key) return;
+        if (key === 'phone' || key === 'name') return;
+        if (value === undefined || value === null || value === '') return;
+        extraVariables[key] = String(value).trim();
+      });
+
+      return {
+        phone,
+        name,
+        ...extraVariables,
+      };
     }).filter(c => c.phone);
 
     if (contacts.length === 0) {

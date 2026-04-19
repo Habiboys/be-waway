@@ -5,6 +5,31 @@ const waService = require('./whatsappService');
 let timer = null;
 let isRunning = false;
 
+function normalizeJobPayload(rawPayload) {
+  let payload = rawPayload;
+
+  if (typeof payload === 'string') {
+    try {
+      payload = JSON.parse(payload);
+    } catch (_error) {
+      payload = {};
+    }
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    payload = {};
+  }
+
+  const organizationId = payload.organizationId ?? payload.organization_id ?? null;
+  const deviceId = payload.deviceId ?? payload.device_id ?? null;
+
+  return {
+    ...payload,
+    organizationId: organizationId == null ? null : Number(organizationId),
+    deviceId: deviceId == null ? null : Number(deviceId),
+  };
+}
+
 function getRecurringIntervalMs(recurring = {}) {
   const value = Number(recurring.interval_value || 0);
   const unit = String(recurring.interval_unit || '').toLowerCase();
@@ -18,7 +43,7 @@ function getRecurringIntervalMs(recurring = {}) {
 }
 
 async function processJob(job) {
-  const payload = job.payload || {};
+  const payload = normalizeJobPayload(job.payload);
 
   if (job.type === 'single_send') {
     const result = await waService.sendMessage(
@@ -136,7 +161,8 @@ async function tick() {
       } catch (error) {
         const attempts = Number(job.attempts || 1);
         const canRetry = attempts < 3;
-        const recurringEnabled = Boolean((job.payload || {}).recurring?.enabled);
+        const currentPayload = normalizeJobPayload(job.payload);
+        const recurringEnabled = Boolean((currentPayload.recurring || {}).enabled);
 
         if (recurringEnabled) {
           await job.update({
@@ -144,7 +170,7 @@ async function tick() {
             run_at: new Date(Date.now() + 60 * 1000),
             attempts: 0,
             payload: {
-              ...(job.payload || {}),
+              ...currentPayload,
               error: error.message,
               failed_at: new Date(),
             },
@@ -156,7 +182,7 @@ async function tick() {
           status: canRetry ? 'pending' : 'failed',
           run_at: canRetry ? new Date(Date.now() + (attempts * 30 * 1000)) : null,
           payload: {
-            ...(job.payload || {}),
+            ...currentPayload,
             error: error.message,
             failed_at: new Date(),
           },
