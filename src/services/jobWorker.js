@@ -5,8 +5,82 @@ const waService = require('./whatsappService');
 let timer = null;
 let isRunning = false;
 
+function getRecurringIntervalMs(recurring = {}) {
+  const value = Number(recurring.interval_value || 0);
+  const unit = String(recurring.interval_unit || '').toLowerCase();
+  if (!value || value <= 0) return 0;
+
+  if (unit === 'hour') return value * 60 * 60 * 1000;
+  if (unit === 'day') return value * 24 * 60 * 60 * 1000;
+  if (unit === 'week') return value * 7 * 24 * 60 * 60 * 1000;
+
+  return 0;
+}
+
 async function processJob(job) {
   const payload = job.payload || {};
+
+  if (job.type === 'single_send') {
+    const result = await waService.sendMessage(
+      payload.deviceId,
+      payload.phone || '',
+      payload.message || '',
+      {
+        ...(payload.options || {}),
+        organizationId: payload.organizationId,
+      }
+    );
+
+    const recurring = payload.recurring || {};
+    if (recurring.enabled) {
+      const intervalMs = getRecurringIntervalMs(recurring);
+      const nextRunAt = intervalMs > 0 ? new Date(Date.now() + intervalMs) : null;
+
+      if (!nextRunAt) {
+        await job.update({
+          status: 'failed',
+          payload: {
+            ...payload,
+            error: 'Invalid recurring interval configuration',
+            failed_at: new Date(),
+          },
+        });
+        return;
+      }
+
+      await job.update({
+        status: 'pending',
+        attempts: 0,
+        run_at: nextRunAt,
+        payload: {
+          ...payload,
+          last_result: {
+            status: 'sent',
+            to: result.to,
+            id: result.id,
+            timestamp: result.timestamp,
+          },
+          last_run_at: new Date(),
+        },
+      });
+      return;
+    }
+
+    await job.update({
+      status: 'completed',
+      payload: {
+        ...payload,
+        result: {
+          status: 'sent',
+          to: result.to,
+          id: result.id,
+          timestamp: result.timestamp,
+        },
+        completed_at: new Date(),
+      },
+    });
+    return;
+  }
 
   if (job.type !== 'bulk_send') {
     await job.update({ status: 'failed' });
@@ -62,6 +136,21 @@ async function tick() {
       } catch (error) {
         const attempts = Number(job.attempts || 1);
         const canRetry = attempts < 3;
+        const recurringEnabled = Boolean((job.payload || {}).recurring?.enabled);
+
+        if (recurringEnabled) {
+          await job.update({
+            status: 'pending',
+            run_at: new Date(Date.now() + 60 * 1000),
+            attempts: 0,
+            payload: {
+              ...(job.payload || {}),
+              error: error.message,
+              failed_at: new Date(),
+            },
+          });
+          continue;
+        }
 
         await job.update({
           status: canRetry ? 'pending' : 'failed',

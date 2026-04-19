@@ -1,5 +1,6 @@
 const buildCrudController = require('./crudFactory');
 const asyncHandler = require('../utils/asyncHandler');
+const { Op } = require('sequelize');
 const waService = require('../services/whatsappService');
 const quotaService = require('../services/quotaService');
 const db = require('../models');
@@ -12,6 +13,31 @@ const controller = buildCrudController({ modelName: 'Device', label: 'Device' })
 const getOwnedDevice = async (id, organizationId) => {
   return db.Device.findOne({ where: { id, organization_id: organizationId } });
 };
+
+const SCHEDULE_JOB_STATUSES = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
+
+function isScheduleOwnedByContext(job, organizationId, deviceId) {
+  const payload = job?.payload || {};
+  return Number(payload.organizationId) === Number(organizationId)
+    && Number(payload.deviceId) === Number(deviceId);
+}
+
+function serializeScheduledJob(job) {
+  const payload = job.payload || {};
+  return {
+    id: job.id,
+    status: job.status,
+    run_at: job.run_at,
+    created_at: job.created_at,
+    attempts: job.attempts,
+    phone: payload.phone || null,
+    message: payload.message || '',
+    recurring: payload.recurring || { enabled: false },
+    last_result: payload.last_result || payload.result || null,
+    last_run_at: payload.last_run_at || null,
+    error: payload.error || null,
+  };
+}
 
 // --- Upload middleware for Excel files ---
 const uploadDir = path.join(process.cwd(), 'uploads');
@@ -131,6 +157,211 @@ controller.sendTest = asyncHandler(async (req, res) => {
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
   }
+});
+
+// --- Schedule single message ---
+controller.scheduleSend = asyncHandler(async (req, res) => {
+  const {
+    phone,
+    message,
+    schedule_type,
+    run_at,
+    interval_value,
+    interval_unit,
+  } = req.body || {};
+
+  if (!phone || !message) {
+    return res.status(400).json({ message: 'phone and message are required' });
+  }
+
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const type = String(schedule_type || 'once').toLowerCase();
+  const isAdmin = req.user?.role === 'admin';
+  const now = new Date();
+
+  let firstRunAt = run_at ? new Date(run_at) : new Date();
+  if (Number.isNaN(firstRunAt.getTime())) {
+    return res.status(400).json({ message: 'Invalid run_at format' });
+  }
+  if (firstRunAt < now) {
+    firstRunAt = now;
+  }
+
+  const recurring = { enabled: false };
+
+  if (type === 'hourly' || type === 'daily' || type === 'weekly') {
+    recurring.enabled = true;
+    recurring.interval_value = 1;
+    recurring.interval_unit = type === 'hourly' ? 'hour' : type === 'daily' ? 'day' : 'week';
+  } else if (type === 'custom') {
+    const value = Number(interval_value || 0);
+    const unit = String(interval_unit || '').toLowerCase();
+    if (!Number.isFinite(value) || value <= 0) {
+      return res.status(400).json({ message: 'interval_value must be greater than 0 for custom schedule' });
+    }
+    if (!['hour', 'day', 'week'].includes(unit)) {
+      return res.status(400).json({ message: 'interval_unit must be one of: hour, day, week' });
+    }
+
+    recurring.enabled = true;
+    recurring.interval_value = value;
+    recurring.interval_unit = unit;
+  } else if (type !== 'once') {
+    return res.status(400).json({
+      message: 'schedule_type must be one of: once, hourly, daily, weekly, custom',
+    });
+  }
+
+  const job = await db.Job.create({
+    type: 'single_send',
+    payload: {
+      organizationId: req.organizationId,
+      deviceId: Number(req.params.id),
+      phone: String(phone).trim(),
+      message: String(message),
+      options: {
+        bypassQuota: isAdmin,
+      },
+      recurring,
+      source: 'api:scheduleSend',
+      created_by: req.user.id,
+    },
+    status: 'pending',
+    attempts: 0,
+    run_at: firstRunAt,
+  });
+
+  return res.json({
+    success: true,
+    message: recurring.enabled ? 'Recurring schedule created' : 'Scheduled message created',
+    job_id: job.id,
+    job_status: job.status,
+    run_at: job.run_at,
+    recurring,
+  });
+});
+
+// --- List scheduled messages by device ---
+controller.listSchedules = asyncHandler(async (req, res) => {
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const rows = await db.Job.findAll({
+    where: {
+      type: 'single_send',
+      status: { [Op.in]: SCHEDULE_JOB_STATUSES },
+    },
+    order: [['id', 'DESC']],
+    limit: 300,
+  });
+
+  const filtered = rows.filter((job) =>
+    isScheduleOwnedByContext(job, req.organizationId, req.params.id)
+  );
+
+  return res.json(filtered.map(serializeScheduledJob));
+});
+
+// --- Stop/cancel scheduled message ---
+controller.stopSchedule = asyncHandler(async (req, res) => {
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const job = await db.Job.findByPk(req.params.jobId);
+  if (!job || job.type !== 'single_send') {
+    return res.status(404).json({ message: 'Scheduled message not found' });
+  }
+
+  if (!isScheduleOwnedByContext(job, req.organizationId, req.params.id)) {
+    return res.status(403).json({ message: 'You do not have access to this schedule' });
+  }
+
+  if (job.status === 'processing') {
+    return res.status(409).json({ message: 'Schedule is currently processing and cannot be stopped' });
+  }
+
+  const payload = job.payload || {};
+  await job.update({
+    status: 'cancelled',
+    payload: {
+      ...payload,
+      recurring: { ...(payload.recurring || {}), enabled: false },
+      cancelled_at: new Date(),
+      cancelled_by: req.user?.id || null,
+    },
+  });
+
+  return res.json(serializeScheduledJob(job));
+});
+
+// --- Resume recurring schedule ---
+controller.resumeSchedule = asyncHandler(async (req, res) => {
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const job = await db.Job.findByPk(req.params.jobId);
+  if (!job || job.type !== 'single_send') {
+    return res.status(404).json({ message: 'Scheduled message not found' });
+  }
+
+  if (!isScheduleOwnedByContext(job, req.organizationId, req.params.id)) {
+    return res.status(403).json({ message: 'You do not have access to this schedule' });
+  }
+
+  const payload = job.payload || {};
+  const recurring = payload.recurring || {};
+
+  if (!recurring.enabled && !recurring.interval_unit) {
+    return res.status(400).json({ message: 'This schedule is not recurring' });
+  }
+
+  await job.update({
+    status: 'pending',
+    run_at: new Date(),
+    attempts: 0,
+    payload: {
+      ...payload,
+      recurring: { ...recurring, enabled: true },
+      resumed_at: new Date(),
+      resumed_by: req.user?.id || null,
+    },
+  });
+
+  return res.json(serializeScheduledJob(job));
+});
+
+// --- Delete scheduled message ---
+controller.deleteSchedule = asyncHandler(async (req, res) => {
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const job = await db.Job.findByPk(req.params.jobId);
+  if (!job || job.type !== 'single_send') {
+    return res.status(404).json({ message: 'Scheduled message not found' });
+  }
+
+  if (!isScheduleOwnedByContext(job, req.organizationId, req.params.id)) {
+    return res.status(403).json({ message: 'You do not have access to this schedule' });
+  }
+
+  if (job.status === 'processing') {
+    return res.status(409).json({ message: 'Schedule is currently processing and cannot be deleted' });
+  }
+
+  await job.destroy();
+  return res.json({ success: true, message: 'Scheduled message deleted' });
 });
 
 // --- Send bulk messages ---
