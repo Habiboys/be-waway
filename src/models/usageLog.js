@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
     id: { type: DataTypes.UUID, allowNull: false, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     organization_id: { type: DataTypes.UUID, allowNull: false },
     messages_sent: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    otp_sent: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     date: { type: DataTypes.DATEONLY, allowNull: false }
   }, {
     tableName: 'usage_logs',

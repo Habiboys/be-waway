@@ -13,6 +13,7 @@ router.get('/', (_req, res) => {
 
 router.use('/auth', require('./auth.routes'));
 router.use('/webhooks', require('./webhooks.routes'));
+router.use('/public/otp', require('./publicOtp.routes'));
 
 router.use(authMiddleware);
 router.use(emailVerifiedMiddleware);
@@ -32,5 +33,6 @@ router.use('/usage', require('./usage.routes'));
 router.use('/api-keys', require('./apiKeys.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/template-messages', require('./templateMessages.routes'));
+router.use('/otp/apps', require('./otpApps.routes'));
 
 module.exports = router;

@@ -8,6 +8,7 @@ module.exports = (sequelize, DataTypes) => {
     price: { type: DataTypes.DECIMAL(15, 2), allowNull: false, defaultValue: 0 },
     message_limit: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     device_limit: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    otp_limit: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     duration_days: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 30 },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }
   }, {

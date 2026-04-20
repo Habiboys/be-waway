@@ -17,6 +17,7 @@ router.post('/:id/disconnect', c.disconnect);
 router.get('/:id/status', c.status);
 
 // Messaging
+router.post('/:id/send', quotaMiddleware, c.sendTest);
 router.post('/:id/send-test', quotaMiddleware, c.sendTest);
 router.post('/:id/schedule-send', quotaMiddleware, c.scheduleSend);
 router.get('/:id/schedules', c.listSchedules);

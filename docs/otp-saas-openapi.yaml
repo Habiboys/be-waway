@@ -1,0 +1,153 @@
+openapi: 3.0.3
+info:
+  title: WA Blast OTP SaaS API
+  version: 1.0.0
+  description: WhatsApp-only OTP API for client systems and management API for tenant dashboard.
+servers:
+  - url: /api
+paths:
+  /public/otp/send:
+    post:
+      summary: Send OTP
+      parameters:
+        - in: header
+          name: x-api-key
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination, channel, purpose]
+              properties:
+                destination:
+                  type: string
+                channel:
+                  type: string
+                  enum: [whatsapp]
+                purpose:
+                  type: string
+                  enum: [login, register, payment, custom]
+                reference_id:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        "201":
+          description: OTP sent
+        "429":
+          description: Rate limited
+  /public/otp/verify:
+    post:
+      summary: Verify OTP
+      parameters:
+        - in: header
+          name: x-api-key
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction_id, code]
+              properties:
+                transaction_id:
+                  type: string
+                code:
+                  type: string
+      responses:
+        "200":
+          description: Verified
+  /public/otp/resend:
+    post:
+      summary: Resend OTP
+      parameters:
+        - in: header
+          name: x-api-key
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction_id]
+              properties:
+                transaction_id:
+                  type: string
+      responses:
+        "200":
+          description: Resent
+  /public/otp/cancel:
+    post:
+      summary: Cancel OTP transaction
+      parameters:
+        - in: header
+          name: x-api-key
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction_id]
+              properties:
+                transaction_id:
+                  type: string
+      responses:
+        "200":
+          description: Cancelled
+  /public/otp/transactions/{transactionId}:
+    get:
+      summary: Get OTP transaction
+      parameters:
+        - in: header
+          name: x-api-key
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: transactionId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction detail
+  /otp/apps:
+    get:
+      summary: List OTP apps
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of apps
+    post:
+      summary: Create OTP app
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Created
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
