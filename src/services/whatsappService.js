@@ -36,6 +36,13 @@ const DEFAULT_PUPPETEER_ARGS = [
   '--disable-gpu',
 ];
 
+function isTransientContextError(err) {
+  const msg = String(err && err.message ? err.message : err || '').toLowerCase();
+  return msg.includes('execution context was destroyed')
+    || msg.includes('cannot find context with specified id')
+    || msg.includes('protocol error') && msg.includes('runtime.evaluate');
+}
+
 function getHeadlessSetting() {
   const v = String(process.env.WA_HEADLESS || 'true').toLowerCase();
   if (v === 'false' || v === '0' || v === 'no') return false;
@@ -271,6 +278,17 @@ async function initClient(deviceId, deviceRecord) {
   } catch (err) {
     updateStatus('error', { error: err.message });
     clients.delete(deviceId);
+    try {
+      await client.destroy();
+    } catch (e) {
+      console.error(`[WA:${deviceId}] Destroy error after init failure:`, e.message);
+    }
+
+    if (isTransientContextError(err)) {
+      console.warn(`[WA:${deviceId}] Transient puppeteer error. Scheduling reconnect.`);
+      scheduleReconnect(deviceId, deviceRecord);
+      return getStatus(deviceId);
+    }
     throw err;
   }
 
