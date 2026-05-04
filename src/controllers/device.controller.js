@@ -96,6 +96,44 @@ function serializeScheduledJob(job) {
   };
 }
 
+// Normalize contact objects to accept common column/key aliases and
+// mirror canonical keys so template variables work with either language.
+function normalizeContactsArray(rawContacts) {
+  if (!Array.isArray(rawContacts)) return [];
+
+  return rawContacts.map((raw) => {
+    const c = raw || {};
+
+    const phone = String(
+      c.phone || c.nomor || c.no_hp || c.nohp || ''
+    ).trim();
+
+    const name = String(
+      c.name || c.nama || ''
+    ).trim();
+
+    const normalized = { ...c, phone, name };
+
+    // Mirror name aliases so templates using {{nama}} or {{name}} both work
+    if (name && !normalized.name) normalized.name = name;
+    if (name && !normalized.nama) normalized.nama = name;
+
+    // Mirror phone aliases to keep compatibility with different imports
+    if (phone && !normalized.phone) normalized.phone = phone;
+    if (phone && !normalized.nomor) normalized.nomor = phone;
+    if (phone && !normalized.no_hp) normalized.no_hp = phone;
+    if (phone && !normalized.nohp) normalized.nohp = phone;
+
+    // Ensure all values are strings for template substitution
+    Object.keys(normalized).forEach((k) => {
+      if (normalized[k] === undefined || normalized[k] === null) normalized[k] = '';
+      else normalized[k] = String(normalized[k]);
+    });
+
+    return normalized;
+  }).filter(c => c.phone);
+}
+
 // --- Upload middleware for Excel files ---
 const uploadDir = path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
@@ -429,9 +467,12 @@ controller.deleteSchedule = asyncHandler(async (req, res) => {
 
 // --- Send bulk messages ---
 controller.sendBulk = asyncHandler(async (req, res) => {
-  const { contacts, message, delay, batchSize, batchPause } = req.body;
+  const rawContacts = req.body.contacts;
+  const { message, delay, batchSize, batchPause } = req.body;
 
-  if (!contacts || !Array.isArray(contacts) || contacts.length === 0) {
+  const contacts = normalizeContactsArray(rawContacts || []);
+
+  if (!contacts || contacts.length === 0) {
     return res.status(400).json({ message: 'contacts array is required' });
   }
 
@@ -543,7 +584,10 @@ controller.sendBulkExcel = asyncHandler(async (req, res) => {
       };
     }).filter(c => c.phone);
 
-    if (contacts.length === 0) {
+    // Normalize aliases (e.g., nama/name, nomor/phone) and mirror keys
+    const normalizedContacts = normalizeContactsArray(contacts || []);
+
+    if (normalizedContacts.length === 0) {
       return res.status(400).json({
         message: 'No valid contacts found. Make sure Excel has columns: phone/nomor/no_hp and name/nama',
       });
@@ -572,7 +616,7 @@ controller.sendBulkExcel = asyncHandler(async (req, res) => {
       payload: {
         organizationId: req.organizationId,
         deviceId: String(device.id),
-        contacts,
+        contacts: normalizedContacts,
         message,
         options: {
           bypassQuota: isAdmin,
