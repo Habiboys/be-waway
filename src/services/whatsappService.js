@@ -494,12 +494,25 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
 
   for (let i = 0; i < contacts.length; i++) {
     const contact = contacts[i];
-    const context = Object.fromEntries(
+    const rawContext = Object.fromEntries(
       Object.entries(contact || {}).map(([key, value]) => [
         key,
         value === undefined || value === null ? '' : String(value),
       ])
     );
+
+    // Common aliases for template variables
+    // - name <-> nama
+    // - phone <-> nomor/no_hp
+    const context = {
+      ...rawContext,
+      name: rawContext.name || rawContext.nama || '',
+      nama: rawContext.nama || rawContext.name || '',
+      phone: rawContext.phone || rawContext.nomor || rawContext.no_hp || '',
+      nomor: rawContext.nomor || rawContext.phone || rawContext.no_hp || '',
+      no_hp: rawContext.no_hp || rawContext.phone || rawContext.nomor || '',
+    };
+
     const phone = context.phone || '';
     const name = context.name || '';
 
