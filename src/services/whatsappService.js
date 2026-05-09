@@ -403,6 +403,64 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
   const organizationId = options.organizationId || null;
   const bypassQuota = options.bypassQuota === true;
 
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const randomIntInclusive = (min, max) => {
+    const minInt = Math.ceil(min);
+    const maxInt = Math.floor(max);
+    if (!Number.isFinite(minInt) || !Number.isFinite(maxInt)) return 0;
+    if (maxInt <= minInt) return minInt;
+    return Math.floor(Math.random() * (maxInt - minInt + 1)) + minInt;
+  };
+
+  const normalizeMsRange = (value, defaults) => {
+    // Supports:
+    // - number (seconds if <1000, otherwise ms)
+    // - string: "5-15", "5000-15000", or single number
+    // - object: {min,max} (min/max can be string/number)
+    // Returns ms range {min,max}.
+    if (value === null || value === undefined || value === '') return { ...defaults };
+    if (value === false) return null;
+    if (value === 0) return { min: 0, max: 0 };
+
+    const toMs = (n) => {
+      const num = Number(n);
+      if (!Number.isFinite(num)) return NaN;
+      // Heuristic: small numbers are seconds.
+      return num > 0 && num < 1000 ? Math.round(num * 1000) : Math.round(num);
+    };
+
+    if (typeof value === 'number') {
+      const ms = toMs(value);
+      if (!Number.isFinite(ms)) return { ...defaults };
+      return { min: ms, max: ms };
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      const rangeMatch = trimmed.match(/^([0-9]+(?:\.[0-9]+)?)\s*-\s*([0-9]+(?:\.[0-9]+)?)$/);
+      if (rangeMatch) {
+        const minMs = toMs(rangeMatch[1]);
+        const maxMs = toMs(rangeMatch[2]);
+        if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) return { ...defaults };
+        return minMs <= maxMs ? { min: minMs, max: maxMs } : { min: maxMs, max: minMs };
+      }
+
+      const single = toMs(trimmed);
+      if (!Number.isFinite(single)) return { ...defaults };
+      return { min: single, max: single };
+    }
+
+    if (typeof value === 'object') {
+      const minMs = toMs(value.min);
+      const maxMs = toMs(value.max);
+      if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) return { ...defaults };
+      return minMs <= maxMs ? { min: minMs, max: maxMs } : { min: maxMs, max: minMs };
+    }
+
+    return { ...defaults };
+  };
+
   const applyTemplateVariables = (template = '', context = {}) => {
     return String(template).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
       const value = context[key];
@@ -425,9 +483,13 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
   }
 
   const results = [];
-  const delay = options.delay || { min: 5000, max: 15000 }; // 5-15 seconds
-  const batchSize = options.batchSize || 30;
-  const batchPause = options.batchPause || { min: 60000, max: 180000 }; // 1-3 minutes
+  const delayDefaults = { min: 5000, max: 15000 }; // 5-15 seconds
+  const batchPauseDefaults = { min: 60000, max: 180000 }; // 1-3 minutes
+
+  const delay = normalizeMsRange(options.delay, delayDefaults) || delayDefaults;
+  const batchPause = normalizeMsRange(options.batchPause, batchPauseDefaults);
+  const batchSizeRaw = options.batchSize;
+  const batchSize = Math.max(1, Number.parseInt(batchSizeRaw ?? 30, 10) || 30);
   const maxRetries = Number(options.maxRetries || 3);
 
   for (let i = 0; i < contacts.length; i++) {
@@ -463,7 +525,7 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
 
         if (attempt < maxRetries) {
           const backoff = Math.min(30000, (2 ** (attempt - 1)) * 2000 + Math.floor(Math.random() * 1000));
-          await new Promise((r) => setTimeout(r, backoff));
+          await sleep(backoff);
         }
       }
     }
@@ -491,16 +553,20 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
 
     // Delay between messages
     if (i < contacts.length - 1) {
-      const randomDelay = Math.floor(Math.random() * (delay.max - delay.min + 1)) + delay.min;
+      // Always apply per-message delay
+      const messageDelayMs = randomIntInclusive(delay.min, delay.max);
+      if (messageDelayMs > 0) {
+        await sleep(messageDelayMs);
+      }
 
-      // Batch pause — after every batchSize messages, take a longer break
-      if ((i + 1) % batchSize === 0) {
-        const pauseTime = Math.floor(Math.random() * (batchPause.max - batchPause.min + 1)) + batchPause.min;
-        console.log(`[WA:${deviceId}] Batch pause ${Math.round(pauseTime / 1000)}s after ${i + 1} messages`);
-        emit(deviceId, 'bulk_progress', { pausing: true, resumeIn: pauseTime });
-        await new Promise(r => setTimeout(r, pauseTime));
-      } else {
-        await new Promise(r => setTimeout(r, randomDelay));
+      // Batch pause — after every batchSize messages, take a longer break (in addition to per-message delay)
+      if (batchPause && (i + 1) % batchSize === 0) {
+        const pauseTimeMs = randomIntInclusive(batchPause.min, batchPause.max);
+        if (pauseTimeMs > 0) {
+          console.log(`[WA:${deviceId}] Batch pause ${Math.round(pauseTimeMs / 1000)}s after ${i + 1} messages`);
+          emit(deviceId, 'bulk_progress', { pausing: true, resumeIn: pauseTimeMs });
+          await sleep(pauseTimeMs);
+        }
       }
     }
   }
