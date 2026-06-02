@@ -1,73 +1,24 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
-const path = require('path');
-const fs = require('fs');
+const { DisconnectReason } = require('@whiskeysockets/baileys');
 const db = require('../models');
 const quotaService = require('./quotaService');
+const BaileysTransport = require('./transports/baileysTransport');
 
-/**
- * WhatsApp Service — manages whatsapp-web.js client instances.
- * One client per device. All state is held in-memory.
- */
-
-const clients = new Map();   // deviceId → Client
-const statuses = new Map();  // deviceId → { status, qr, info }
+const statuses = new Map(); // deviceId -> { status, qr, info }
 const reconnectTimers = new Map(); // deviceId -> timeout
 const reconnectAttempts = new Map(); // deviceId -> number
 const manualDisconnects = new Set(); // deviceId set when user explicitly disconnects
+const sentIdempotencyKeys = new Map(); // key -> timestamp
 let _io = null;
+
+const transport = new BaileysTransport({
+  baseAuthPath: process.env.WA_AUTH_PATH || undefined,
+});
 
 const MAX_RECONNECT_ATTEMPTS = Number(process.env.WA_MAX_RECONNECT_ATTEMPTS || 10);
 const BASE_RECONNECT_DELAY_MS = Number(process.env.WA_RECONNECT_BASE_DELAY_MS || 5000);
 const MAX_RECONNECT_DELAY_MS = Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 120000);
-
-const CHROME_PATHS = {
-  win32: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  linux: '/usr/bin/google-chrome-stable',
-};
-
-const DEFAULT_PUPPETEER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-accelerated-2d-canvas',
-  '--no-first-run',
-  '--disable-gpu',
-];
-
-function isTransientContextError(err) {
-  const msg = String(err && err.message ? err.message : err || '').toLowerCase();
-  return msg.includes('execution context was destroyed')
-    || msg.includes('cannot find context with specified id')
-    || msg.includes('protocol error') && msg.includes('runtime.evaluate');
-}
-
-function getHeadlessSetting() {
-  const v = String(process.env.WA_HEADLESS || 'true').toLowerCase();
-  if (v === 'false' || v === '0' || v === 'no') return false;
-  if (v === 'new') return 'new';
-  return true;
-}
-
-function getPuppeteerArgs() {
-  const custom = String(process.env.WA_PUPPETEER_ARGS || '').trim();
-  if (!custom) return DEFAULT_PUPPETEER_ARGS;
-  return custom
-    .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean);
-}
-
-function getChromePath() {
-  const envPath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (envPath && fs.existsSync(envPath)) return envPath;
-
-  const defaultPath = CHROME_PATHS[process.platform];
-  if (defaultPath && fs.existsSync(defaultPath)) return defaultPath;
-
-  return undefined; // let puppeteer use bundled chromium
-}
+const IDEMPOTENCY_TTL_MS = Number(process.env.WA_IDEMPOTENCY_TTL_MS || 60 * 60 * 1000);
 
 function setIO(io) {
   _io = io;
@@ -79,8 +30,47 @@ function emit(deviceId, event, data) {
   }
 }
 
+function toKey(deviceId) {
+  return String(deviceId);
+}
+
+function cleanupIdempotencyCache() {
+  const now = Date.now();
+  for (const [k, ts] of sentIdempotencyKeys.entries()) {
+    if ((now - ts) > IDEMPOTENCY_TTL_MS) {
+      sentIdempotencyKeys.delete(k);
+    }
+  }
+}
+
+function markIdempotencySent(key) {
+  if (!key) return;
+  sentIdempotencyKeys.set(String(key), Date.now());
+  if (sentIdempotencyKeys.size > 5000) {
+    cleanupIdempotencyCache();
+  }
+}
+
+function isIdempotencySent(key) {
+  if (!key) return false;
+  const ts = sentIdempotencyKeys.get(String(key));
+  if (!ts) return false;
+  if ((Date.now() - ts) > IDEMPOTENCY_TTL_MS) {
+    sentIdempotencyKeys.delete(String(key));
+    return false;
+  }
+  return true;
+}
+
+function updateStatus(deviceId, status, extra = {}) {
+  const key = toKey(deviceId);
+  const current = statuses.get(key) || {};
+  statuses.set(key, { ...current, status, ...extra });
+  emit(key, 'status', { status, ...extra });
+}
+
 function clearReconnect(deviceId) {
-  const key = String(deviceId);
+  const key = toKey(deviceId);
   const timer = reconnectTimers.get(key);
   if (timer) {
     clearTimeout(timer);
@@ -88,15 +78,31 @@ function clearReconnect(deviceId) {
   }
 }
 
-function scheduleReconnect(deviceId, deviceRecord) {
-  const key = String(deviceId);
-  if (manualDisconnects.has(key)) {
-    return;
-  }
+function getStatus(deviceId) {
+  return statuses.get(toKey(deviceId)) || { status: 'offline', qr: null, info: null };
+}
 
-  if (reconnectTimers.has(key)) {
-    return;
+function getAllStatuses() {
+  const result = {};
+  for (const [id, s] of statuses.entries()) {
+    result[id] = s;
   }
+  return result;
+}
+
+function getClient(deviceId) {
+  return transport.getSession(toKey(deviceId))?.socket || null;
+}
+
+function isReady(deviceId) {
+  const s = getStatus(toKey(deviceId));
+  return s.status === 'ready';
+}
+
+function scheduleReconnect(deviceId, deviceRecord) {
+  const key = toKey(deviceId);
+  if (manualDisconnects.has(key)) return;
+  if (reconnectTimers.has(key)) return;
 
   const attempts = Number(reconnectAttempts.get(key) || 0) + 1;
   reconnectAttempts.set(key, attempts);
@@ -113,15 +119,12 @@ function scheduleReconnect(deviceId, deviceRecord) {
     reconnectTimers.delete(key);
 
     try {
-      const latestDevice = deviceRecord || await db.Device.findByPk(String(key));
+      const latestDevice = deviceRecord || await db.Device.findByPk(key);
       if (!latestDevice) {
         console.warn(`[WA:${key}] Device not found during reconnect`);
         return;
       }
-
-      if (manualDisconnects.has(key)) {
-        return;
-      }
+      if (manualDisconnects.has(key)) return;
 
       await initClient(key, latestDevice);
     } catch (error) {
@@ -134,199 +137,140 @@ function scheduleReconnect(deviceId, deviceRecord) {
   reconnectTimers.set(key, timer);
 }
 
-function getStatus(deviceId) {
-  return statuses.get(String(deviceId)) || { status: 'offline', qr: null, info: null };
+async function mapQrToDataUrl(qr) {
+  return QRCode.toDataURL(qr, {
+    width: 320,
+    margin: 2,
+    color: { dark: '#1e293b', light: '#ffffff' },
+  });
 }
 
-function getAllStatuses() {
-  const result = {};
-  for (const [id, s] of statuses.entries()) {
-    result[id] = s;
-  }
-  return result;
+function parseDisconnect(update = {}) {
+  const statusCode = update?.lastDisconnect?.error?.output?.statusCode;
+  const reasonName = Object.keys(DisconnectReason || {}).find((k) => DisconnectReason[k] === statusCode) || 'unknown';
+  return { statusCode, reasonName };
 }
 
 async function initClient(deviceId, deviceRecord) {
-  deviceId = String(deviceId);
-  manualDisconnects.delete(deviceId);
-  clearReconnect(deviceId);
+  const key = toKey(deviceId);
+  manualDisconnects.delete(key);
+  clearReconnect(key);
 
-  // If client already exists and is not disconnected, return current status
-  if (clients.has(deviceId)) {
-    const current = getStatus(deviceId);
-    if (current.status === 'ready' || current.status === 'qr_pending' || current.status === 'authenticated') {
-      return current;
-    }
-    // Cleanup stale client
-    await disconnectClient(deviceId);
+  const current = getStatus(key);
+  if (transport.hasSession(key) && ['ready', 'qr_pending', 'authenticated', 'connecting'].includes(current.status)) {
+    return current;
   }
 
-  const authPath = path.join(process.cwd(), '.wwebjs_auth');
+  if (transport.hasSession(key)) {
+    await transport.disconnectDevice(key);
+  }
 
-  const puppeteerArgs = getPuppeteerArgs();
+  updateStatus(key, 'connecting', { qr: null, qrRaw: null });
 
-  const chromePath = getChromePath();
-
-  const clientOptions = {
-    authStrategy: new LocalAuth({
-      clientId: `device-${deviceId}`,
-      dataPath: authPath,
-    }),
-    puppeteer: {
-      headless: getHeadlessSetting(),
-      args: puppeteerArgs,
-      ...(chromePath ? { executablePath: chromePath } : {}),
-    },
-  };
-
-  const client = new Client(clientOptions);
-
-  // Update status helper
-  const updateStatus = (status, extra = {}) => {
-    const current = statuses.get(deviceId) || {};
-    statuses.set(deviceId, { ...current, status, ...extra });
-    emit(deviceId, 'status', { status, ...extra });
-  };
-
-  updateStatus('connecting');
-
-  // --- Event Listeners ---
-
-  client.on('qr', async (qr) => {
-    try {
-      const qrDataUrl = await QRCode.toDataURL(qr, {
-        width: 320,
-        margin: 2,
-        color: { dark: '#1e293b', light: '#ffffff' },
-      });
-      updateStatus('qr_pending', { qr: qrDataUrl, qrRaw: qr });
-      console.log(`[WA:${deviceId}] QR code generated`);
-    } catch (err) {
-      console.error(`[WA:${deviceId}] QR generation error:`, err.message);
-    }
-  });
-
-  client.on('authenticated', () => {
-    updateStatus('authenticated', { qr: null, qrRaw: null });
-    console.log(`[WA:${deviceId}] Authenticated`);
-  });
-
-  client.on('ready', async () => {
-    let info = null;
-    try {
-      info = client.info;
-    } catch (e) {
-      // info might not be available
-    }
-    updateStatus('ready', { qr: null, qrRaw: null, info });
-    reconnectAttempts.set(deviceId, 0);
-    clearReconnect(deviceId);
-    console.log(`[WA:${deviceId}] Client is ready!`);
-
-    // Update device record in DB if provided
-    if (deviceRecord) {
+  await transport.connectDevice(key, {
+    onQr: async (qr) => {
       try {
-        await deviceRecord.update({
-          status: 'online',
-          phone_number: info?.wid?.user || deviceRecord.phone_number,
-          last_seen: new Date(),
-        });
-      } catch (e) {
-        console.error(`[WA:${deviceId}] Failed to update device record:`, e.message);
+        const qrDataUrl = await mapQrToDataUrl(qr);
+        updateStatus(key, 'qr_pending', { qr: qrDataUrl, qrRaw: qr });
+        console.log(`[WA:${key}] QR code generated`);
+      } catch (err) {
+        console.error(`[WA:${key}] QR generation error:`, err.message);
       }
-    }
+    },
+    onAuthenticated: () => {
+      const current = getStatus(key);
+      if (current.status !== 'ready') {
+        updateStatus(key, 'authenticated', { qr: null, qrRaw: null });
+      }
+    },
+    onConnectionUpdate: async (update) => {
+      const connection = update?.connection;
+
+      if (connection === 'connecting') {
+        updateStatus(key, 'connecting');
+        return;
+      }
+
+      if (connection === 'open') {
+        const session = transport.getSession(key);
+        const userId = session?.socket?.user?.id || '';
+        const phoneNumber = String(userId).split(':')[0] || (deviceRecord?.phone_number || null);
+        const info = { id: userId, wid: { user: phoneNumber } };
+
+        updateStatus(key, 'ready', { qr: null, qrRaw: null, info });
+        reconnectAttempts.set(key, 0);
+        clearReconnect(key);
+        console.log(`[WA:${key}] Client is ready!`);
+
+        if (deviceRecord) {
+          try {
+            await deviceRecord.update({
+              status: 'online',
+              phone_number: phoneNumber,
+              last_seen: new Date(),
+            });
+          } catch (e) {
+            console.error(`[WA:${key}] Failed to update device record:`, e.message);
+          }
+        }
+        return;
+      }
+
+      if (connection === 'close') {
+        const { statusCode, reasonName } = parseDisconnect(update);
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+
+        updateStatus(key, loggedOut ? 'auth_failure' : 'disconnected', {
+          qr: null,
+          info: null,
+          reason: reasonName,
+        });
+
+        if (deviceRecord) {
+          try {
+            await deviceRecord.update({ status: 'offline', last_seen: new Date() });
+          } catch {
+            // noop
+          }
+        }
+
+        if (!manualDisconnects.has(key) && !loggedOut) {
+          await transport.disconnectDevice(key);
+          scheduleReconnect(key, deviceRecord);
+        } else {
+          await transport.disconnectDevice(key);
+          reconnectAttempts.set(key, 0);
+          clearReconnect(key);
+        }
+      }
+    },
+    onIncomingMessage: (event) => {
+      const firstMessage = event?.messages?.[0];
+      if (!firstMessage?.key?.fromMe) {
+        const from = firstMessage?.key?.remoteJid || 'unknown';
+        const body = firstMessage?.message?.conversation || '';
+        console.log(`[WA:${key}] Incoming from ${from}: ${String(body).substring(0, 50)}`);
+      }
+    },
   });
 
-  client.on('disconnected', async (reason) => {
-    updateStatus('disconnected', { qr: null, info: null, reason });
-    console.log(`[WA:${deviceId}] Disconnected:`, reason);
-    clients.delete(deviceId);
-
-    if (deviceRecord) {
-      try {
-        await deviceRecord.update({ status: 'offline', last_seen: new Date() });
-      } catch (e) { /* silent */ }
-    }
-
-    const normalizedReason = String(reason || '').toUpperCase();
-    const shouldReconnect =
-      !manualDisconnects.has(deviceId) &&
-      normalizedReason !== 'LOGOUT';
-
-    if (shouldReconnect) {
-      scheduleReconnect(deviceId, deviceRecord);
-    }
-  });
-
-  client.on('auth_failure', (msg) => {
-    updateStatus('auth_failure', { qr: null, error: msg });
-    console.error(`[WA:${deviceId}] Auth failure:`, msg);
-    clients.delete(deviceId);
-    clearReconnect(deviceId);
-    reconnectAttempts.set(deviceId, 0);
-  });
-
-  client.on('message', (msg) => {
-    // Log incoming messages for debugging
-    console.log(`[WA:${deviceId}] Incoming from ${msg.from}: ${msg.body?.substring(0, 50)}`);
-  });
-
-  clients.set(deviceId, client);
-
-  try {
-    await client.initialize();
-  } catch (err) {
-    updateStatus('error', { error: err.message });
-    clients.delete(deviceId);
-    try {
-      await client.destroy();
-    } catch (e) {
-      console.error(`[WA:${deviceId}] Destroy error after init failure:`, e.message);
-    }
-
-    if (isTransientContextError(err)) {
-      console.warn(`[WA:${deviceId}] Transient puppeteer error. Scheduling reconnect.`);
-      scheduleReconnect(deviceId, deviceRecord);
-      return getStatus(deviceId);
-    }
-    throw err;
-  }
-
-  return getStatus(deviceId);
+  return getStatus(key);
 }
 
 async function disconnectClient(deviceId) {
-  deviceId = String(deviceId);
-  manualDisconnects.add(deviceId);
-  clearReconnect(deviceId);
-  reconnectAttempts.set(deviceId, 0);
-  const client = clients.get(deviceId);
+  const key = toKey(deviceId);
+  manualDisconnects.add(key);
+  clearReconnect(key);
+  reconnectAttempts.set(key, 0);
 
-  if (client) {
-    try {
-      await client.destroy();
-    } catch (e) {
-      console.error(`[WA:${deviceId}] Destroy error:`, e.message);
-    }
-    clients.delete(deviceId);
-  }
+  await transport.disconnectDevice(key);
 
-  statuses.set(deviceId, { status: 'offline', qr: null, info: null });
-  emit(deviceId, 'status', { status: 'offline' });
-}
-
-function getClient(deviceId) {
-  return clients.get(String(deviceId));
-}
-
-function isReady(deviceId) {
-  const s = getStatus(String(deviceId));
-  return s.status === 'ready';
+  statuses.set(key, { status: 'offline', qr: null, info: null });
+  emit(key, 'status', { status: 'offline' });
 }
 
 async function sendMessage(deviceId, phone, message, options = {}) {
-  deviceId = String(deviceId);
-
+  const key = toKey(deviceId);
   const organizationId = options.organizationId || null;
   const bypassQuota = options.bypassQuota === true;
 
@@ -340,66 +284,40 @@ async function sendMessage(deviceId, phone, message, options = {}) {
     }
   }
 
-  if (!isReady(deviceId)) {
+  if (!isReady(key)) {
     throw new Error('Device is not connected / ready');
   }
 
-  const client = clients.get(deviceId);
-  if (!client) {
-    throw new Error('Client not found');
+  const idempotencyKey = options.idempotencyKey || null;
+  if (isIdempotencySent(idempotencyKey)) {
+    return {
+      id: null,
+      timestamp: Math.floor(Date.now() / 1000),
+      to: String(phone || ''),
+      body: message,
+      status: 'sent',
+      skipped: true,
+      reason: 'idempotent_replay',
+    };
   }
 
-  // Normalize phone number — ensure @c.us suffix
-  let chatId = phone.replace(/[^0-9]/g, '');
-  if (!chatId.endsWith('@c.us')) {
-    chatId = `${chatId}@c.us`;
-  }
-
-  // Check if number is registered on WhatsApp
-  const isRegistered = await client.isRegisteredUser(chatId);
-  if (!isRegistered) {
+  const registration = await transport.isRegisteredUser(key, phone);
+  if (!registration.registered) {
     throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`);
   }
 
-  const sendOptions = {};
-
-  // Handle media attachment
-  if (options.mediaUrl) {
-    try {
-      const media = await MessageMedia.fromUrl(options.mediaUrl);
-      sendOptions.media = media;
-      if (options.caption) sendOptions.caption = options.caption;
-    } catch (e) {
-      console.error(`[WA:${deviceId}] Media download error:`, e.message);
-    }
-  }
-
-  if (options.mediaPath) {
-    try {
-      const media = MessageMedia.fromFilePath(options.mediaPath);
-      return await client.sendMessage(chatId, media, { caption: message });
-    } catch (e) {
-      console.error(`[WA:${deviceId}] Media file error:`, e.message);
-    }
-  }
-
-  const result = await client.sendMessage(chatId, message, sendOptions);
+  const result = await transport.sendMessage(key, phone, message, options);
+  markIdempotencySent(idempotencyKey);
 
   if (organizationId && !bypassQuota) {
     await quotaService.consumeQuota(organizationId, 1, { skipCheck: true });
   }
 
-  return {
-    id: result.id?._serialized,
-    timestamp: result.timestamp,
-    to: chatId,
-    body: message,
-    status: 'sent',
-  };
+  return result;
 }
 
 async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {}) {
-  deviceId = String(deviceId);
+  const key = toKey(deviceId);
   const organizationId = options.organizationId || null;
   const bypassQuota = options.bypassQuota === true;
 
@@ -414,19 +332,13 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
   };
 
   const normalizeMsRange = (value, defaults) => {
-    // Supports:
-    // - number (seconds if <1000, otherwise ms)
-    // - string: "5-15", "5000-15000", or single number
-    // - object: {min,max} (min/max can be string/number)
-    // Returns ms range {min,max}.
     if (value === null || value === undefined || value === '') return { ...defaults };
     if (value === false) return null;
     if (value === 0) return { min: 0, max: 0 };
 
     const toMs = (n) => {
       const num = Number(n);
-      if (!Number.isFinite(num)) return NaN;
-      // Heuristic: small numbers are seconds.
+      if (!Number.isFinite(num)) return Number.NaN;
       return num > 0 && num < 1000 ? Math.round(num * 1000) : Math.round(num);
     };
 
@@ -462,13 +374,13 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
   };
 
   const applyTemplateVariables = (template = '', context = {}) => {
-    return String(template).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
-      const value = context[key];
+    return String(template).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, varKey) => {
+      const value = context[varKey];
       return value === undefined || value === null || value === '' ? match : String(value);
     });
   };
 
-  if (!isReady(deviceId)) {
+  if (!isReady(key)) {
     throw new Error('Device is not connected / ready');
   }
 
@@ -483,8 +395,8 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
   }
 
   const results = [];
-  const delayDefaults = { min: 5000, max: 15000 }; // 5-15 seconds
-  const batchPauseDefaults = { min: 60000, max: 180000 }; // 1-3 minutes
+  const delayDefaults = { min: 180000, max: 600000 };
+  const batchPauseDefaults = { min: 60000, max: 180000 };
 
   const delay = normalizeMsRange(options.delay, delayDefaults) || delayDefaults;
   const batchPause = normalizeMsRange(options.batchPause, batchPauseDefaults);
@@ -492,18 +404,15 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
   const batchSize = Math.max(1, Number.parseInt(batchSizeRaw ?? 30, 10) || 30);
   const maxRetries = Number(options.maxRetries || 3);
 
-  for (let i = 0; i < contacts.length; i++) {
+  for (let i = 0; i < contacts.length; i += 1) {
     const contact = contacts[i];
     const rawContext = Object.fromEntries(
-      Object.entries(contact || {}).map(([key, value]) => [
-        key,
+      Object.entries(contact || {}).map(([ctxKey, value]) => [
+        ctxKey,
         value === undefined || value === null ? '' : String(value),
-      ])
+      ]),
     );
 
-    // Common aliases for template variables
-    // - name <-> nama
-    // - phone <-> nomor/no_hp
     const context = {
       ...rawContext,
       name: rawContext.name || rawContext.nama || '',
@@ -515,27 +424,44 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
 
     const phone = context.phone || '';
     const name = context.name || '';
-
-    // Replace template variables
     const message = applyTemplateVariables(messageTemplate, context);
+
+    const idempotencyKey = options.idempotencyKey
+      ? `${options.idempotencyKey}:${phone}`
+      : (contact?.idempotencyKey || null);
+
+    if (isIdempotencySent(idempotencyKey)) {
+      results.push({ phone, name, status: 'sent', skipped: true, reason: 'idempotent_replay' });
+      emit(key, 'bulk_progress', {
+        current: i + 1,
+        total: contacts.length,
+        lastSent: phone,
+        status: 'sent',
+        skipped: true,
+      });
+      continue;
+    }
 
     let sent = false;
     let lastError = null;
     let messageId = null;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
       try {
-        const result = await sendMessage(deviceId, phone, message, {
+        const result = await sendMessage(key, phone, message, {
           organizationId,
           skipQuotaCheck: true,
           bypassQuota,
+          mediaUrl: options.mediaUrl,
+          mediaPath: options.mediaPath,
+          caption: options.caption,
         });
         messageId = result.id;
         sent = true;
+        markIdempotencySent(idempotencyKey);
         break;
       } catch (err) {
         lastError = err;
-
         if (attempt < maxRetries) {
           const backoff = Math.min(30000, (2 ** (attempt - 1)) * 2000 + Math.floor(Math.random() * 1000));
           await sleep(backoff);
@@ -545,8 +471,7 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
 
     if (sent) {
       results.push({ phone, name, status: 'sent', messageId });
-
-      emit(deviceId, 'bulk_progress', {
+      emit(key, 'bulk_progress', {
         current: i + 1,
         total: contacts.length,
         lastSent: phone,
@@ -554,8 +479,7 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
       });
     } else {
       results.push({ phone, name, status: 'failed', error: lastError?.message || 'Failed to send message' });
-
-      emit(deviceId, 'bulk_progress', {
+      emit(key, 'bulk_progress', {
         current: i + 1,
         total: contacts.length,
         lastSent: phone,
@@ -564,30 +488,27 @@ async function sendBulkMessages(deviceId, contacts, messageTemplate, options = {
       });
     }
 
-    // Delay between messages
     if (i < contacts.length - 1) {
-      // Always apply per-message delay
       const messageDelayMs = randomIntInclusive(delay.min, delay.max);
       if (messageDelayMs > 0) {
         await sleep(messageDelayMs);
       }
 
-      // Batch pause — after every batchSize messages, take a longer break (in addition to per-message delay)
       if (batchPause && (i + 1) % batchSize === 0) {
         const pauseTimeMs = randomIntInclusive(batchPause.min, batchPause.max);
         if (pauseTimeMs > 0) {
-          console.log(`[WA:${deviceId}] Batch pause ${Math.round(pauseTimeMs / 1000)}s after ${i + 1} messages`);
-          emit(deviceId, 'bulk_progress', { pausing: true, resumeIn: pauseTimeMs });
+          console.log(`[WA:${key}] Batch pause ${Math.round(pauseTimeMs / 1000)}s after ${i + 1} messages`);
+          emit(key, 'bulk_progress', { pausing: true, resumeIn: pauseTimeMs });
           await sleep(pauseTimeMs);
         }
       }
     }
   }
 
-  emit(deviceId, 'bulk_complete', {
+  emit(key, 'bulk_complete', {
     total: contacts.length,
-    sent: results.filter(r => r.status === 'sent').length,
-    failed: results.filter(r => r.status === 'failed').length,
+    sent: results.filter((r) => r.status === 'sent').length,
+    failed: results.filter((r) => r.status === 'failed').length,
   });
 
   return results;

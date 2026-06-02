@@ -48,6 +48,12 @@ controller.remove = asyncHandler(async (req, res) => {
 
 const SCHEDULE_JOB_STATUSES = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
 
+function getRequestIdempotencyKey(req, fallback = '') {
+  const fromHeader = req.get('Idempotency-Key') || req.get('idempotency-key');
+  if (fromHeader) return String(fromHeader).trim();
+  return fallback ? String(fallback) : null;
+}
+
 function normalizeJobPayload(rawPayload) {
   let payload = rawPayload;
 
@@ -223,12 +229,12 @@ controller.allStatuses = asyncHandler(async (req, res) => {
   res.json(statuses);
 });
 
-// --- Send test message ---
+// --- Send test message (text / mediaUrl / caption) ---
 controller.sendTest = asyncHandler(async (req, res) => {
-  const { phone, message } = req.body;
+  const { phone, message, mediaUrl, caption } = req.body;
 
-  if (!phone || !message) {
-    return res.status(400).json({ message: 'phone and message are required' });
+  if (!phone || (!message && !mediaUrl)) {
+    return res.status(400).json({ message: 'phone and message (or mediaUrl) are required' });
   }
 
   const device = await getOwnedDevice(req.params.id, req.organizationId);
@@ -250,12 +256,66 @@ controller.sendTest = asyncHandler(async (req, res) => {
   }
 
   try {
-    const result = await waService.sendMessage(device.id, phone, message, {
+    const result = await waService.sendMessage(device.id, phone, message || '', {
       organizationId: req.organizationId,
       bypassQuota: isAdmin,
+      mediaUrl: mediaUrl || undefined,
+      caption: caption || undefined,
+      idempotencyKey: getRequestIdempotencyKey(req, `api-send:${req.organizationId}:${device.id}:${String(phone).trim()}:${String(message)}`),
     });
     res.json({ success: true, ...result });
   } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+// --- Send media file (upload + send) ---
+controller.sendMedia = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'file (media) is required' });
+  }
+
+  const { phone, caption } = req.body;
+  if (!phone) {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ message: 'phone is required' });
+  }
+
+  const device = await getOwnedDevice(req.params.id, req.organizationId);
+  if (!device) {
+    fs.unlinkSync(req.file.path);
+    return res.status(404).json({ message: 'Device not found' });
+  }
+
+  const isAdmin = req.user?.role === 'admin';
+  if (!isAdmin) {
+    const quota = await quotaService.checkQuota(req.organizationId);
+    if (!quota.hasActiveSubscription || !quota.allowed) {
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({
+        message: !quota.hasActiveSubscription
+          ? 'Subscription is required before sending messages'
+          : 'Quota exhausted. Please upgrade your plan.',
+        quota,
+      });
+    }
+  }
+
+  try {
+    const result = await waService.sendMessage(device.id, phone, caption || '', {
+      organizationId: req.organizationId,
+      bypassQuota: isAdmin,
+      mediaPath: req.file.path,
+      mediaMimeType: req.file.mimetype || undefined,
+      mediaFileName: req.file.originalname || undefined,
+      caption: caption || undefined,
+      idempotencyKey: getRequestIdempotencyKey(req, `api-send-media:${req.organizationId}:${device.id}:${String(phone).trim()}:${Date.now()}`),
+    });
+    // Remove file after sending
+    fs.unlink(req.file.path, () => {});
+    res.json({ success: true, ...result });
+  } catch (err) {
+    fs.unlinkSync(req.file.path);
     res.status(400).json({ success: false, message: err.message });
   }
 });
@@ -269,6 +329,8 @@ controller.scheduleSend = asyncHandler(async (req, res) => {
     run_at,
     interval_value,
     interval_unit,
+    mediaUrl,
+    caption,
   } = req.body || {};
 
   if (!phone || !message) {
@@ -326,6 +388,9 @@ controller.scheduleSend = asyncHandler(async (req, res) => {
       message: String(message),
       options: {
         bypassQuota: isAdmin,
+        mediaUrl: mediaUrl || undefined,
+        caption: caption || undefined,
+        idempotencyKey: getRequestIdempotencyKey(req, `job-single:${req.organizationId}:${device.id}:${String(phone).trim()}:${firstRunAt.toISOString()}`),
       },
       recurring,
       source: 'api:scheduleSend',
@@ -468,7 +533,7 @@ controller.deleteSchedule = asyncHandler(async (req, res) => {
 // --- Send bulk messages ---
 controller.sendBulk = asyncHandler(async (req, res) => {
   const rawContacts = req.body.contacts;
-  const { message, delay, batchSize, batchPause } = req.body;
+  const { message, delay, batchSize, batchPause, mediaUrl, mediaPath, caption } = req.body;
 
   const contacts = normalizeContactsArray(rawContacts || []);
 
@@ -509,7 +574,11 @@ controller.sendBulk = asyncHandler(async (req, res) => {
         delay,
         batchSize,
         batchPause,
+        mediaUrl: mediaUrl || undefined,
+        mediaPath: mediaPath || undefined,
+        caption: caption || undefined,
         bypassQuota: isAdmin,
+        idempotencyKey: getRequestIdempotencyKey(req, `job-bulk:${req.organizationId}:${device.id}:${Date.now()}`),
       },
       source: 'api:sendBulk',
       created_by: req.user.id,
@@ -620,6 +689,7 @@ controller.sendBulkExcel = asyncHandler(async (req, res) => {
         message,
         options: {
           bypassQuota: isAdmin,
+          idempotencyKey: getRequestIdempotencyKey(req, `job-bulk-excel:${req.organizationId}:${device.id}:${Date.now()}`),
         },
         source: 'api:sendBulkExcel',
         created_by: req.user.id,

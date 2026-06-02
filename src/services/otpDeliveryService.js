@@ -79,6 +79,7 @@ exports.sendOtp = async ({ channel, destination, code, purpose, app, ttlSeconds,
   const result = await whatsappService.sendMessage(deviceId, destination, message, {
     organizationId: organizationId || null,
     bypassQuota: true,
+    idempotencyKey: `otp:${app?.id || 'unknown'}:${destination}:${code}`,
   });
 
   // Consume OTP quota after successful send (always track, even admin)
